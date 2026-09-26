@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.27.1 (2026-09-26)
+
+### Features
+
+* SystemOne capability completion
+  * `ranked_models` expected-utility ranking now drives the actual model pick (best-value model from the shim's ranking, safe fallback when absent)
+  * New `zcode decide` command: choice/score/noul typed decisions with calibrated probabilities, human + JSON output, zero setup
+  * Decision records: every route and decide call appends a calibration-compatible JSONL record under the user config dir (fail-open)
+  * Historical `jeff1_second_opinion` field now surfaced as a decider-backed advisory in diagnostics
+  * Runtime shim-down warning is user-visible instead of debug-only
+
 ## 3.27.0 (2026-09-26)
 
 ### Features
