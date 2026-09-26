@@ -12,8 +12,10 @@
 //     `=== CANDIDATE k ===` markers; if the response can't be parsed into
 //     >= 2 candidates, the turn runs today's single-plan path unchanged.
 //   - The rank-plans call never throws: shim down / timeout / non-200 /
-//     old schema (no `ranking` key) -> the first candidate runs, exactly
-//     like today's single plan.
+//     old schema (no `ranking` key) -> fall back to the decide engine
+//     (POST /v1/systemone/decide, Mapika/decider-4b via ./systemone-decide.js)
+//     which picks the best candidate; only when that also fails open does
+//     the first candidate run, exactly like today's single plan.
 //   - Pinned/deterministic config (ZCODE_PLAN_PIN=1 or
 //     SpeedStackSessionConfig.planPin) forces one candidate and skips the
 //     ranking call entirely.
@@ -24,9 +26,16 @@
 // runnable under plain `node --test` type-stripping like its speedstack
 // siblings. No model IDs appear anywhere here: selection is by rank only.
 
+import {
+  decide,
+  SYSTEMONE_DECIDE_MIN_WINNER_PROBABILITY,
+  SYSTEMONE_DECIDE_STATE_CHARS,
+  type SystemOneDecideAnswer,
+} from "./systemone-decide.js";
+
 /**
  * Explicit user pin: deterministic single-plan behavior. Any of
- * 1/true/yes/on forces one candidate and skips rank-plans entirely.
+ * 1/true/yes/on forces one candidate and skips ranking entirely.
  */
 export const PLAN_PIN_ENV = "ZCODE_PLAN_PIN";
 
@@ -45,6 +54,14 @@ export const SYSTEMONE_RANK_PLANS_ENDPOINT =
 
 /** Hard bound on the rank-plans lookup; batched, one engine call. */
 export const SYSTEMONE_RANK_PLANS_TIMEOUT_MS = 8_000;
+
+/** Char budget per plan when a candidate plan becomes decider criteria. */
+export const PLAN_DECIDE_CRITERION_CHARS = 2_000;
+
+/** Instructions sent with the decider plan-choice question. */
+export const PLAN_DECIDE_INSTRUCTIONS =
+  "Pick the single best implementation plan for this task. " +
+  "Reply with exactly one option id.";
 
 // NOTE: the canonical master kill-switch export lives in
 // ./systemone-route.ts as SYSTEMONE_KILL_SWITCH_ENV; the literal is
@@ -72,6 +89,8 @@ export interface PlanRankEntry {
 export interface PlanRanking {
   readonly task: string;
   readonly tier?: string | undefined;
+  /** Where the ranking came from: rank-plans, or the decider fallback. */
+  readonly source?: "rank-plans" | "decide" | undefined;
   readonly ranking: readonly PlanRankEntry[];
 }
 
@@ -82,6 +101,7 @@ export interface PlanSelection {
   readonly plan: PlanCandidate;
   readonly reason:
     | "ranked-winner"
+    | "decided-winner"
     | "no-usable-scores"
     | "no-ranking"
     | "single-plan";
@@ -283,7 +303,13 @@ export function parsePlanRanking(payload: unknown): PlanRanking | undefined {
 export async function fetchSystemOnePlanRanking(
   task: string,
   plans: readonly PlanCandidate[],
-  options?: { endpoint?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv },
+  options?: {
+    endpoint?: string;
+    timeoutMs?: number;
+    env?: NodeJS.ProcessEnv;
+    /** Override for the decider-fallback endpoint (same shim base URL). */
+    decideEndpoint?: string;
+  },
 ): Promise<PlanRanking | undefined> {
   try {
     const env = options?.env ?? process.env;
@@ -304,13 +330,107 @@ export async function fetchSystemOnePlanRanking(
         }),
         signal: controller.signal,
       });
-      if (!response.ok) return undefined;
-      return parsePlanRanking(await response.json());
+      if (response.ok) {
+        const ranking = parsePlanRanking(await response.json());
+        if (ranking) return { ...ranking, source: "rank-plans" as const };
+      }
+      // Non-200 or old schema: fall through to the decider fallback below.
     } catch {
-      return undefined;
+      // Shim down / timeout: fall through to the decider fallback below.
     } finally {
       clearTimeout(timer);
     }
+    return await fetchDeciderPlanRanking(task, plans, {
+      endpoint: options?.decideEndpoint,
+      timeoutMs,
+      env,
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Candidate plans as decider choice criteria: plan id -> plan text
+ * (truncated to the criteria char budget). Plan ids travel as the
+ * decider's labels and map back 1:1 to candidates.
+ */
+function buildPlanDecideCriteria(
+  plans: readonly PlanCandidate[],
+): Record<string, string> {
+  const criteria: Record<string, string> = {};
+  for (const plan of plans) {
+    criteria[plan.id] = plan.text.slice(0, PLAN_DECIDE_CRITERION_CHARS);
+  }
+  return criteria;
+}
+
+/**
+ * Convert a validated decider choice answer into a PlanRanking so the
+ * winner selection below works unchanged. Score = winning probability
+ * (highest wins), carried as pSuccess for the run diagnostics. Returns
+ * undefined when the winner is too uncertain — the caller keeps the
+ * first candidate.
+ */
+export function decideAnswerToPlanRanking(
+  task: string,
+  plans: readonly PlanCandidate[],
+  answer: SystemOneDecideAnswer,
+  minWinnerProbability: number = SYSTEMONE_DECIDE_MIN_WINNER_PROBABILITY,
+): PlanRanking | undefined {
+  try {
+    const winnerProb = answer.probabilities[answer.label] ?? 0;
+    if (winnerProb < minWinnerProbability) return undefined;
+    const ranking: PlanRankEntry[] = [];
+    for (const plan of plans) {
+      const prob = answer.probabilities[plan.id];
+      if (typeof prob !== "number" || !Number.isFinite(prob)) {
+        return undefined;
+      }
+      ranking.push({ id: plan.id, score: prob, pSuccess: prob });
+    }
+    return { task, tier: "systemone-decide", source: "decide", ranking };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Decider-backed plan ranking (Mapika/decider-4b via the shim's
+ * /v1/systemone/decide endpoint): asks the decision engine to pick the
+ * best candidate plan. Advisory only, fail-open: any error, timeout, or
+ * validation failure returns undefined and the caller runs the first
+ * candidate. Never throws.
+ */
+export async function fetchDeciderPlanRanking(
+  task: string,
+  plans: readonly PlanCandidate[],
+  options?: {
+    endpoint?: string;
+    timeoutMs?: number;
+    env?: NodeJS.ProcessEnv;
+  },
+): Promise<PlanRanking | undefined> {
+  try {
+    const env = options?.env ?? process.env;
+    if (env[SYSTEMONE_MASTER_KILL_SWITCH_ENV] === "0") return undefined;
+    if (!task || !task.trim()) return undefined;
+    if (!plans || plans.length < 2) return undefined;
+    const answer = await decide(
+      {
+        state: task.slice(0, SYSTEMONE_DECIDE_STATE_CHARS),
+        instructions: PLAN_DECIDE_INSTRUCTIONS,
+        criteria: buildPlanDecideCriteria(plans),
+        type: "choice",
+      },
+      {
+        endpoint: options?.endpoint,
+        timeoutMs: options?.timeoutMs,
+        env,
+      },
+    );
+    if (!answer) return undefined;
+    return decideAnswerToPlanRanking(task, plans, answer);
   } catch {
     return undefined;
   }
@@ -365,7 +485,11 @@ export function selectRankedPlan(
     return {
       index: bestIndex,
       plan: plans[bestIndex] as PlanCandidate,
-      reason: sawFiniteScore ? "ranked-winner" : "no-usable-scores",
+      reason: sawFiniteScore
+        ? ranking.source === "decide"
+          ? "decided-winner"
+          : "ranked-winner"
+        : "no-usable-scores",
       rankedIds,
     };
   } catch {

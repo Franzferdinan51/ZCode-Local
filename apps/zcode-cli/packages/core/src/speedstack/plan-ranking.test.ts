@@ -8,12 +8,17 @@
 //   to the first candidate
 // - pinned/deterministic config forces a single candidate, no ranking
 // - fetch fail-open: kill switch, bad endpoint, < 2 plans
+// - decider fallback: rank-plans down -> /v1/systemone/decide choice picks
+//   the winner (source "decide", reason "decided-winner"); low confidence
+//   and invalid answers fail open to the first candidate
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
   buildPlannerCandidatesPrompt,
+  decideAnswerToPlanRanking,
   DEFAULT_PLAN_CANDIDATE_COUNT,
+  fetchDeciderPlanRanking,
   fetchSystemOnePlanRanking,
   isPlanPinned,
   MAX_PLAN_CANDIDATE_COUNT,
@@ -235,9 +240,19 @@ test("fetchSystemOnePlanRanking honors the master kill switch", async () => {
 test("fetchSystemOnePlanRanking fails open on a dead endpoint", async () => {
   const result = await fetchSystemOnePlanRanking("task", CANDIDATES.slice(0, 2), {
     endpoint: "http://127.0.0.1:9/v1/systemone/rank-plans",
+    decideEndpoint: "http://127.0.0.1:9/v1/systemone/decide",
     timeoutMs: 500,
   });
   assert.equal(result, undefined);
+});
+
+test("fetchDeciderPlanRanking honors the master kill switch", async () => {
+  assert.equal(
+    await fetchDeciderPlanRanking("task", CANDIDATES.slice(0, 2), {
+      env: { ZCODE_SYSTEMONE: "0" },
+    }),
+    undefined,
+  );
 });
 
 test("fetchSystemOnePlanRanking skips < 2 plans and empty tasks", async () => {
@@ -248,5 +263,148 @@ test("fetchSystemOnePlanRanking skips < 2 plans and empty tasks", async () => {
   assert.equal(
     await fetchSystemOnePlanRanking("   ", CANDIDATES.slice(0, 2)),
     undefined,
+  );
+});
+
+test("decider fallback: rank-plans 404 -> decide choice picks the winner", async () => {
+  const originalFetch = globalThis.fetch;
+  const seen: Array<{ url: string; body: unknown }> = [];
+  globalThis.fetch = (async (input: string, init?: RequestInit) => {
+    seen.push({
+      url: input,
+      body: init?.body ? JSON.parse(init.body as string) : undefined,
+    });
+    if (input.endsWith("/v1/systemone/rank-plans")) {
+      return { ok: false, json: async () => ({}) } as Response;
+    }
+    return {
+      ok: true,
+      json: async () => ({
+        type: "choice",
+        label: "plan_2",
+        probabilities: { plan_1: 0.3, plan_2: 0.7 },
+        confidence: 0.4,
+        latency_ms: 85,
+        backend: "decider",
+      }),
+    } as Response;
+  }) as typeof fetch;
+  try {
+    const ranking = await fetchSystemOnePlanRanking(
+      "deploy task",
+      CANDIDATES.slice(0, 2),
+      { env: { ZCODE_SYSTEMONE: "1" } },
+    );
+    assert.ok(ranking);
+    assert.equal(ranking.source, "decide");
+    assert.equal(ranking.tier, "systemone-decide");
+    assert.equal(ranking.ranking.length, 2);
+    assert.equal(ranking.ranking[0]!.pSuccess, 0.3);
+    assert.equal(ranking.ranking[1]!.pSuccess, 0.7);
+    const decideCall = seen.find((call) =>
+      call.url.endsWith("/v1/systemone/decide"),
+    );
+    assert.ok(decideCall);
+    const body = decideCall!.body as Record<string, unknown>;
+    assert.equal(body["type"], "choice");
+    assert.deepEqual(Object.keys(body["criteria"] as object), [
+      "plan_1",
+      "plan_2",
+    ]);
+    const selection = selectRankedPlan(CANDIDATES.slice(0, 2), ranking);
+    assert.ok(selection);
+    assert.equal(selection.index, 1);
+    assert.equal(selection.plan.id, "plan_2");
+    assert.equal(selection.reason, "decided-winner");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("decider fallback fails open on low winner confidence", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: string) => {
+    if (input.endsWith("/v1/systemone/rank-plans")) {
+      return { ok: false, json: async () => ({}) } as Response;
+    }
+    return {
+      ok: true,
+      json: async () => ({
+        type: "choice",
+        label: "plan_1",
+        probabilities: { plan_1: 0.34, plan_2: 0.33, plan_3: 0.33 },
+        confidence: 0.01,
+      }),
+    } as Response;
+  }) as typeof fetch;
+  try {
+    const result = await fetchSystemOnePlanRanking(
+      "task",
+      [
+        { id: "plan_1", text: "a" },
+        { id: "plan_2", text: "b" },
+        { id: "plan_3", text: "c" },
+      ],
+      { env: { ZCODE_SYSTEMONE: "1" } },
+    );
+    assert.equal(result, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("decideAnswerToPlanRanking converts a validated answer", () => {
+  const ranking = decideAnswerToPlanRanking("task", CANDIDATES.slice(0, 2), {
+    type: "choice",
+    label: "plan_1",
+    probabilities: { plan_1: 0.8, plan_2: 0.2 },
+    confidence: 0.6,
+  });
+  assert.ok(ranking);
+  assert.equal(ranking.source, "decide");
+  assert.equal(ranking.ranking[0]!.score, 0.8);
+  // low confidence fails open
+  assert.equal(
+    decideAnswerToPlanRanking("task", CANDIDATES.slice(0, 2), {
+      type: "choice",
+      label: "plan_1",
+      probabilities: { plan_1: 0.3, plan_2: 0.7 },
+      confidence: 0.4,
+    }),
+    undefined,
+  );
+  // missing candidate probability fails open
+  assert.equal(
+    decideAnswerToPlanRanking("task", CANDIDATES.slice(0, 2), {
+      type: "choice",
+      label: "plan_1",
+      probabilities: { plan_1: 1 },
+      confidence: 0.9,
+    }),
+    undefined,
+  );
+});
+
+test("selectRankedPlan reports decided-winner for decider rankings", () => {
+  const deciderRanking: PlanRanking = {
+    task: "t",
+    source: "decide",
+    ranking: [
+      { id: "plan_1", score: 0.2 },
+      { id: "plan_2", score: 0.8 },
+    ],
+  };
+  const selection = selectRankedPlan(CANDIDATES.slice(0, 2), deciderRanking);
+  assert.equal(selection?.reason, "decided-winner");
+  const legacyRanking: PlanRanking = {
+    task: "t",
+    ranking: [
+      { id: "plan_1", score: 0.2 },
+      { id: "plan_2", score: 0.8 },
+    ],
+  };
+  assert.equal(
+    selectRankedPlan(CANDIDATES.slice(0, 2), legacyRanking)?.reason,
+    "ranked-winner",
   );
 });
