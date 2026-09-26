@@ -33,6 +33,7 @@ import { parseProviderConfig } from "@zcode/provider";
 import {
   DEFAULT_SYSTEMONE_SHIM_URL,
   SYSTEMONE_DECIDE_KILL_SWITCH_ENV,
+  SYSTEMONE_JEFF1_ENV,
   SYSTEMONE_SHIM_URL_ENV,
   isLoopbackShimUrl,
   isPlausibleShimUrl,
@@ -156,6 +157,12 @@ export function applyOnboardingStateToEnv(
     systemone.decideFallback === false
   ) {
     env[SYSTEMONE_DECIDE_KILL_SWITCH_ENV] = "0";
+  }
+  if (
+    (env[SYSTEMONE_JEFF1_ENV] ?? "").trim() === "" &&
+    systemone.jeff1 === false
+  ) {
+    env[SYSTEMONE_JEFF1_ENV] = "0";
   }
 }
 
@@ -790,18 +797,18 @@ export async function runOnboardingWizard(
   if (!decideFallback) {
     out("  Decide engine off for this machine — saved, applied at runtime automatically.");
   }
-  const jeffAnswer = await ask(
-    "Enable Jeff-1 second-opinion routing? (optional decision head; default on) [Y/n]: ",
+  const secondOpinionAnswer = await ask(
+    "Enable the decision sidecar's second-opinion on uncertain routes? (decider-4b; default on) [Y/n]: ",
     "y",
   );
-  const jeff1 = !/^(n|no)$/i.test(jeffAnswer);
+  const jeff1 = !/^(n|no)$/i.test(secondOpinionAnswer);
   if (!systemoneEnabled) {
     out("");
     out("SystemOne disabled for this machine — saved, applied at runtime automatically.");
     out("  (Override anytime with ZCODE_SYSTEMONE=0 in your shell.)");
   }
-  out("The shim's decide engine is selected server-side by SYSTEMONE_DECISION_BACKEND");
-  out("(jeff1 | decider); decider is Mapika/decider-4b (Apache 2.0).");
+  out("The shim's decide engine is Mapika/decider-4b v2.1 (Apache 2.0),");
+  out("served by the decision sidecar (Windows PC, :8079).");
   out("Your choices are saved now and honored at runtime. Kill switch: SYSTEMONE_JEFF1=0.");
 
   const state: OnboardingState = {

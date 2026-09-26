@@ -103,20 +103,18 @@ tool/MCP relevance ranking, and plan ranking. It is advisory-only and
 fail-open, and lives in the Python shim (`python -m systemone.shim`,
 `http://127.0.0.1:8765`). Details: https://github.com/Franzferdinan51/SystemOne.
 
-Jeff-1-backed plan ranking: `plan-execute` asks the shim for N
+Decider-backed plan ranking: `plan-execute` asks the shim for N
 candidate plans and posts them to `/v1/systemone/rank-plans`, executing the
-winner. The ranking blends the GLiClass score 50/50 with **Jeff-1**
-([GestaltLabs/Jeff-1](https://huggingface.co/GestaltLabs/Jeff-1) — Apache 2.0,
-LoRA on [Qwen3-4B-Instruct-2507](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507)),
-an open-weight model trained for Jev-compatible typed decisions
-(`choice`, `score`, `noul`);
-the full ranking lands in run diagnostics. On uncertain routes the shim's
-`jeff1_second_opinion` is advisory-only — and the agent never prunes,
-bumps effort one level, and records why. Jeff-1 runs as its own sidecar
-process (on by default; `SYSTEMONE_JEFF1=0` runs GLiClass-only) and fails
-open with no behavior change when down or slow. It never loads, unloads,
-switches, or competes with the loaded worker model — it lives on the Mac
-mini, never on the inference host.
+winner. The shim blends the GLiClass score 50/50 with the decision sidecar
+(**Mapika/decider-4b** v2.1 — Apache 2.0,
+https://huggingface.co/Mapika/decider-4b), an open-weight model trained for
+Jev-compatible typed decisions (`choice`, `score`, `noul`); the full ranking
+lands in run diagnostics. On uncertain routes the shim's second opinion
+(`jeff1_second_opinion` in the JSON — historical name) is advisory-only —
+and the agent never prunes, bumps effort one level, and records why. The
+sidecar runs on the Windows PC (on by default; `SYSTEMONE_JEFF1=0` runs
+GLiClass-only) and fails open with no behavior change when down or slow. It
+never loads, unloads, switches, or competes with the loaded worker model.
 
 Kill switches (each disables only its own surface; all default on):
 

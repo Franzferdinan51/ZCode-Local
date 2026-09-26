@@ -83,6 +83,13 @@ const SYSTEMONE_MASTER_KILL_SWITCH_ENV = "ZCODE_SYSTEMONE";
  */
 export const SYSTEMONE_DECIDE_KILL_SWITCH_ENV = "ZCODE_SYSTEMONE_DECIDE";
 
+/**
+ * Env var disabling the decision sidecar's second-opinion (`=0`). Read by
+ * the SystemOne shim (uncertain routes + rank-plans blending); honored by
+ * shims ZCode spawns since the child inherits process.env.
+ */
+export const SYSTEMONE_JEFF1_ENV = "SYSTEMONE_JEFF1";
+
 /** One decide request. */
 export interface SystemOneDecideRequest {
   readonly state: string;

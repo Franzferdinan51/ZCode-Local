@@ -104,7 +104,7 @@ function stubFetch(
   models: string[] | null,
   shimUp: boolean,
   decideUp: boolean = shimUp,
-  decideBackend: string = "jeff1",
+  decideBackend: string = "decider",
 ): typeof fetch {
   return (async (url: unknown) => {
     const target = String(url);
@@ -599,6 +599,43 @@ test("applyOnboardingStateToEnv: wizard choices apply without shell exports", ()
   applyOnboardingStateToEnv(env, home);
   assert.equal(env.SYSTEMONE_SHIM_URL, "http://192.168.1.50:8765");
   assert.equal(env.ZCODE_SYSTEMONE_DECIDE, "0");
+});
+
+test("applyOnboardingStateToEnv: declining second-opinion sets SYSTEMONE_JEFF1=0", () => {
+  const home = fixtureHome();
+  const storageDir = resolveZCodeStorageDir({}, home);
+  writeOnboardingState(storageDir, {
+    version: 1,
+    onboarded: true,
+    systemone: {
+      enabled: true,
+      jeff1: false,
+      shimUrl: "http://127.0.0.1:8765",
+      decideFallback: true,
+    },
+  });
+  const env: NodeJS.ProcessEnv = {};
+  applyOnboardingStateToEnv(env, home);
+  assert.equal(env.SYSTEMONE_JEFF1, "0");
+  assert.equal(env.ZCODE_SYSTEMONE_DECIDE, undefined);
+});
+
+test("applyOnboardingStateToEnv: explicit SYSTEMONE_JEFF1 wins over wizard choice", () => {
+  const home = fixtureHome();
+  const storageDir = resolveZCodeStorageDir({}, home);
+  writeOnboardingState(storageDir, {
+    version: 1,
+    onboarded: true,
+    systemone: {
+      enabled: true,
+      jeff1: false,
+      shimUrl: "http://127.0.0.1:8765",
+      decideFallback: true,
+    },
+  });
+  const env: NodeJS.ProcessEnv = { SYSTEMONE_JEFF1: "1" };
+  applyOnboardingStateToEnv(env, home);
+  assert.equal(env.SYSTEMONE_JEFF1, "1");
 });
 
 test("applyOnboardingStateToEnv: explicit env vars win; decide-on sets nothing", () => {
