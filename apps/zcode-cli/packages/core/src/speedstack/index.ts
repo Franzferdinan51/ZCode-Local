@@ -98,17 +98,27 @@ export {
 } from "./plan-ranking.js";
 export {
   SYSTEMONE_DECIDE_ENDPOINT,
+  SYSTEMONE_DECIDE_KILL_SWITCH_ENV,
   SYSTEMONE_DECIDE_MIN_WINNER_PROBABILITY,
   SYSTEMONE_DECIDE_STATE_CHARS,
   SYSTEMONE_DECIDE_TIMEOUT_MS,
   buildDecideChoiceRequest,
   decide,
+  resolveSystemOneDecideEndpoint,
   validateDecideAnswer,
   type DecideFetchImpl,
   type SystemOneDecideAnswer,
   type SystemOneDecideRequest,
   type SystemOneDecideType,
 } from "./systemone-decide.js";
+export {
+  DEFAULT_SYSTEMONE_SHIM_URL,
+  SYSTEMONE_SHIM_URL_ENV,
+  isLoopbackShimUrl,
+  isPlausibleShimUrl,
+  resolveSystemOneShimUrl,
+  systemOneShimEndpoint,
+} from "./systemone-shim-url.js";
 export {
   SUBAGENT_SPAWN_OVERHEAD_TOKENS,
   buildSubagentPolicyReminderBody,
@@ -150,6 +160,7 @@ export {
   resolveMcpAttachPolicy,
   resolveSystemOneBehaviorPolicy,
   resolveSystemOneModelTarget,
+  resolveSystemOneRouteEndpoint,
   routeTierMargin,
   type EffortResolution,
   type SystemOneBehaviorPolicyResolution,

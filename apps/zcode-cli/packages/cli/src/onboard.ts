@@ -14,8 +14,9 @@
 // - The wizard never loads, unloads, or switches LM Studio models —
 //   it only detects what is already loaded.
 // - Everything SystemOne is advisory and fail-open; the kill switches
-//   (ZCODE_SYSTEMONE=0, ZCODE_SPEEDSTACK_PRUNE=0, SYSTEMONE_JEFF1=0)
-//   always win.
+//   (ZCODE_SYSTEMONE=0, ZCODE_SPEEDSTACK_PRUNE=0, ZCODE_SYSTEMONE_DECIDE=0,
+//   SYSTEMONE_JEFF1=0) always win. The shim URL defaults to
+//   $SYSTEMONE_SHIM_URL (else localhost:8765) and is overridable.
 // - Headless-friendly: non-TTY stdin prints a note and exits 0;
 //   --yes accepts every default non-interactively.
 
@@ -29,6 +30,14 @@ import {
   PERSONAL_PROVIDER_CONFIG_FILE_NAME,
 } from "@zcode/provider-node";
 import { parseProviderConfig } from "@zcode/provider";
+import {
+  DEFAULT_SYSTEMONE_SHIM_URL,
+  SYSTEMONE_DECIDE_KILL_SWITCH_ENV,
+  SYSTEMONE_SHIM_URL_ENV,
+  isLoopbackShimUrl,
+  isPlausibleShimUrl,
+  resolveSystemOneShimUrl,
+} from "@zcode/core";
 import { ensureSystemOneShim } from "./systemone-shim-bootstrap.js";
 import type { GlobalOptions, RunContext } from "@zcode/shared-types";
 
@@ -39,7 +48,6 @@ export const ONBOARDING_SKIP_FLAG = "--skip-onboarding";
 
 const LM_STUDIO_BASE_URL = "http://127.0.0.1:1234";
 const LM_STUDIO_MODELS_URL = `${LM_STUDIO_BASE_URL}/v1/models`;
-const SYSTEMONE_SHIM_HEALTHZ_URL = "http://127.0.0.1:8765/healthz";
 const PROBE_TIMEOUT_MS = 2_500;
 
 const META_PROVIDER_ID = "meta";
@@ -84,7 +92,14 @@ export interface OnboardingState {
   version: number;
   onboarded: boolean;
   completedAt?: string;
-  systemone?: { enabled: boolean; jeff1: boolean };
+  systemone?: {
+    enabled: boolean;
+    jeff1: boolean;
+    /** Shim base URL chosen in the wizard (default: $SYSTEMONE_SHIM_URL or localhost:8765). */
+    shimUrl?: string;
+    /** Whether the decide fallback for plan ranking stays enabled. */
+    decideFallback?: boolean;
+  };
   inference?: OnboardingInferenceState;
 }
 
@@ -108,6 +123,39 @@ export function readOnboardingState(
     return parsed as unknown as OnboardingState;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Overlay the wizard's SystemOne choices onto the runtime env when the
+ * corresponding env vars are unset. Explicit env vars always win. This is
+ * what makes "your choices are honored at runtime" true: the CLI calls
+ * this at startup (see env.ts), so a custom shim URL or a disabled decide
+ * engine applies even when the user never exported anything. Never throws.
+ */
+export function applyOnboardingStateToEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  home: string = homedir(),
+): void {
+  let state: OnboardingState | null = null;
+  try {
+    state = readOnboardingState(env, home);
+  } catch {
+    return;
+  }
+  const systemone = state?.systemone;
+  if (!systemone) return;
+  if (
+    (env[SYSTEMONE_SHIM_URL_ENV] ?? "").trim() === "" &&
+    (systemone.shimUrl ?? "").trim() !== ""
+  ) {
+    env[SYSTEMONE_SHIM_URL_ENV] = systemone.shimUrl!.trim();
+  }
+  if (
+    (env[SYSTEMONE_DECIDE_KILL_SWITCH_ENV] ?? "").trim() === "" &&
+    systemone.decideFallback === false
+  ) {
+    env[SYSTEMONE_DECIDE_KILL_SWITCH_ENV] = "0";
   }
 }
 
@@ -343,14 +391,59 @@ export async function probeLmStudioModels(
   }
 }
 
-export async function probeSystemOneShim(fetchImpl: typeof fetch = fetch): Promise<boolean> {
+export async function probeSystemOneShim(
+  fetchImpl: typeof fetch = fetch,
+  shimUrl: string = DEFAULT_SYSTEMONE_SHIM_URL,
+): Promise<boolean> {
   try {
-    const response = await fetchImpl(SYSTEMONE_SHIM_HEALTHZ_URL, {
+    const response = await fetchImpl(`${shimUrl.replace(/\/+$/, "")}/healthz`, {
       signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
     });
     return response.ok;
   } catch {
     return false;
+  }
+}
+
+export interface SystemOneDecideProbe {
+  ok: boolean;
+  backend?: string;
+  error?: string;
+}
+
+/**
+ * POST a tiny noul probe to the shim's decide endpoint. Fail-open by
+ * design: any failure returns { ok: false } and the wizard reports it
+ * and moves on — a down decide engine never fails setup.
+ */
+export async function probeSystemOneDecide(
+  fetchImpl: typeof fetch = fetch,
+  shimUrl: string = DEFAULT_SYSTEMONE_SHIM_URL,
+): Promise<SystemOneDecideProbe> {
+  const url = `${shimUrl.replace(/\/+$/, "")}/v1/systemone/decide`;
+  try {
+    const response = await fetchImpl(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        state: "onboarding connectivity probe",
+        instructions: "Is this an onboarding connectivity probe? Answer yes.",
+        type: "noul",
+      }),
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
+    if (!response.ok) return { ok: false, error: `HTTP ${response.status}` };
+    const payload = (await response.json()) as Record<string, unknown>;
+    if (payload?.["type"] !== "noul") {
+      return { ok: false, error: "unexpected decide reply shape" };
+    }
+    const backend = payload["backend"];
+    return { ok: true, ...(typeof backend === "string" ? { backend } : {}) };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
 }
 
@@ -614,36 +707,67 @@ export async function runOnboardingWizard(
   }
   out("");
 
-  // Step 3 — SystemOne routing. Advisory + fail-open, always.
+  // Step 3 — SystemOne routing + decide engine. Advisory + fail-open, always.
   // ZCode does NOT auto-start the bundled shim (grok-local does) — the
   // wizard probes for it and offers to start it, but never starts it
-  // silently.
-  out("Step 3 of 3 — SystemOne routing");
-  out("Checking the SystemOne shim at http://127.0.0.1:8765 ...");
-  let shimUp = await probeSystemOneShim(opts.fetchImpl);
+  // silently. A down shim never fails setup: the wizard warns and keeps
+  // going, and everything runs degraded (fail-open) afterwards.
+  out("Step 3 of 3 — SystemOne routing + decide engine");
+
+  // Shim URL: default from $SYSTEMONE_SHIM_URL (else localhost), overridable.
+  const defaultShimUrl = resolveSystemOneShimUrl(env);
+  const shimUrlAnswer = await ask(
+    `SystemOne shim URL? [Enter = ${defaultShimUrl}]: `,
+    defaultShimUrl,
+  );
+  let shimUrl = shimUrlAnswer.trim().replace(/\/+$/, "");
+  if (!isPlausibleShimUrl(shimUrl)) {
+    out(`  "${shimUrlAnswer}" doesn't look like a shim URL — keeping ${defaultShimUrl}.`);
+    shimUrl = defaultShimUrl;
+  }
+  if (shimUrl !== defaultShimUrl) {
+    out("  Custom shim URL — saved, and applied at runtime automatically");
+    out(`  (override anytime with ${SYSTEMONE_SHIM_URL_ENV}=${shimUrl} in your shell).`);
+  }
+
+  out(`Checking the SystemOne shim at ${shimUrl} ...`);
+  let shimUp = await probeSystemOneShim(opts.fetchImpl, shimUrl);
   if (shimUp) {
     out("  The shim is answering — routing is ready.");
+    const decideProbe = await probeSystemOneDecide(opts.fetchImpl, shimUrl);
+    if (decideProbe.ok) {
+      out(
+        `  Decide engine answering${decideProbe.backend ? ` (backend: ${decideProbe.backend})` : ""} — plan ranking can use it.`,
+      );
+    } else {
+      out("  Decide engine not answering — plan ranking stays fail-open.");
+    }
   } else {
-    out("  The shim is not answering right now.");
+    out("  The shim is not answering right now — continuing in degraded mode.");
     out("  ZCode does not auto-start the bundled shim — grok-local does.");
-    out("  To run it yourself: python3.11 -m systemone.shim --port 8765");
-    if (!yes) {
-      const startAnswer = await ask("Start the bundled shim now? [y/N]: ", "n");
-      if (/^(y|yes)$/i.test(startAnswer)) {
-        out("  Starting the bundled shim ...");
-        try {
-          await (opts.startShim ?? ensureSystemOneShim)();
-        } catch (error) {
+    if (!isLoopbackShimUrl(shimUrl)) {
+      out("  That shim URL is remote — start the shim on its own host;");
+      out("  ZCode won't start a local shim for a remote URL.");
+    } else {
+      out("  To run it yourself: python3.11 -m systemone.shim --port 8765");
+      if (!yes) {
+        const startAnswer = await ask("Start the bundled shim now? [y/N]: ", "n");
+        if (/^(y|yes)$/i.test(startAnswer)) {
+          out("  Starting the bundled shim ...");
+          try {
+            await (opts.startShim ?? ensureSystemOneShim)();
+          } catch (error) {
+            out(
+              `  Could not start the shim: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+          shimUp = await probeSystemOneShim(opts.fetchImpl, shimUrl);
           out(
-            `  Could not start the shim: ${error instanceof Error ? error.message : String(error)}`,
+            shimUp
+              ? "  The shim is answering now."
+              : "  Still not answering — routing stays fail-open.",
           );
         }
-        shimUp = await probeSystemOneShim(opts.fetchImpl);
-        out(
-          shimUp
-            ? "  The shim is answering now."
-            : "  Still not answering — routing stays fail-open.",
-        );
       }
     }
   }
@@ -652,11 +776,20 @@ export async function runOnboardingWizard(
   out("sufficient model tier, effort level, and tool budget per task, but it never");
   out("blocks a run. If the router is missing or unsure, ZCode just runs normally.");
   out("Kill switches: ZCODE_SYSTEMONE=0 (routing + auto-start off),");
-  out("ZCODE_SPEEDSTACK_PRUNE=0 (tool pruning off).");
+  out("ZCODE_SPEEDSTACK_PRUNE=0 (tool pruning off),");
+  out(`${SYSTEMONE_DECIDE_KILL_SWITCH_ENV}=0 (decide engine off).`);
   out("");
 
   const enableAnswer = await ask("Enable SystemOne routing? [Y/n]: ", "y");
   const systemoneEnabled = !/^(n|no)$/i.test(enableAnswer);
+  const decideAnswer = await ask(
+    "Enable the decide engine for plan ranking? (advisory fallback when rank-plans is down; default on) [Y/n]: ",
+    "y",
+  );
+  const decideFallback = !/^(n|no)$/i.test(decideAnswer);
+  if (!decideFallback) {
+    out("  Decide engine off for this machine — saved, applied at runtime automatically.");
+  }
   const jeffAnswer = await ask(
     "Enable Jeff-1 second-opinion routing? (optional decision head; default on) [Y/n]: ",
     "y",
@@ -664,17 +797,18 @@ export async function runOnboardingWizard(
   const jeff1 = !/^(n|no)$/i.test(jeffAnswer);
   if (!systemoneEnabled) {
     out("");
-    out("SystemOne disabled for this machine. To apply it, add this to your shell profile:");
-    out("  export ZCODE_SYSTEMONE=0");
+    out("SystemOne disabled for this machine — saved, applied at runtime automatically.");
+    out("  (Override anytime with ZCODE_SYSTEMONE=0 in your shell.)");
   }
-  out("Note: Jeff-1 wiring lands with the Jeff-1 integration; your choice is saved");
-  out("now and honored then. Kill switch when it lands: SYSTEMONE_JEFF1=0.");
+  out("The shim's decide engine is selected server-side by SYSTEMONE_DECISION_BACKEND");
+  out("(jeff1 | decider); decider is Mapika/decider-4b (Apache 2.0).");
+  out("Your choices are saved now and honored at runtime. Kill switch: SYSTEMONE_JEFF1=0.");
 
   const state: OnboardingState = {
     version: ONBOARDING_STATE_VERSION,
     onboarded: true,
     completedAt: new Date().toISOString(),
-    systemone: { enabled: systemoneEnabled, jeff1 },
+    systemone: { enabled: systemoneEnabled, jeff1, shimUrl, decideFallback },
     inference,
   };
   writeOnboardingState(storageDir, state);

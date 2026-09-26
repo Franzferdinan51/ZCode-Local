@@ -121,6 +121,7 @@ mini, never on the inference host.
 Kill switches (each disables only its own surface; all default on):
 
 - `ZCODE_SYSTEMONE=0` — all SystemOne integration
+- `ZCODE_SYSTEMONE_DECIDE=0` — the decide engine only (routing untouched)
 - `ZCODE_SPEEDSTACK_PRUNE=0` — per-task tool-pack / MCP pruning
 - `ZCODE_BUDGET_ENFORCE=0` — turn/tool-call budget enforcement
 - `ZCODE_PLAN_EXECUTE=0` — route-driven plan-then-execute
@@ -174,6 +175,17 @@ stores a Meta API key, and writes your initial config. It also runs
 automatically on first interactive launch of `zcode tui` (skip with
 `--skip-onboarding` or `ZCODE_SKIP_ONBOARDING=1`).
 
+The wizard probes the shim URL you give it (default
+`http://127.0.0.1:8765`; override anytime with `SYSTEMONE_SHIM_URL`) for
+both `/healthz` and the decide engine. If the shim is down and the URL is
+local, it asks whether to start the bundled shim (ZCode never auto-starts
+it); for a remote URL it never offers a local start. A down shim means
+routing and the decide engine go fail-open and ZCode runs normally —
+setup never fails because SystemOne is unreachable. Your answers are
+saved to `~/.zcode-local/v2/onboarding.json` and honored at runtime
+automatically (explicit env vars still win): `ZCODE_SYSTEMONE=0` /
+`ZCODE_SYSTEMONE_DECIDE=0` turn routing and the decide fallback off.
+
 - **Node.js** — >= 24.0.0 (per `package.json` `engines`; verified).
   The runtime tarball does **not** bundle Node — `bin/zcode.mjs` runs
   on your system Node, so install Node 24+ first.
@@ -200,9 +212,11 @@ automatically on first interactive launch of `zcode tui` (skip with
   Python >= 3.10). ZCode does **not** auto-start the shim — grok-local
   does, or start it manually
   (`python3.11 -m systemone.shim --port 8765`). Routing is advisory and
-  fail-open. Kill switches: `ZCODE_SYSTEMONE=0` (routing off),
-  `ZCODE_SPEEDSTACK_PRUNE=0` (no MCP pruning), `SYSTEMONE_JEFF1=0`
-  (GLiClass only, no Jeff-1 second head).
+  fail-open. The shim base URL defaults to `http://127.0.0.1:8765` and is
+  overridable with `SYSTEMONE_SHIM_URL`. Kill switches:
+  `ZCODE_SYSTEMONE=0` (routing off), `ZCODE_SPEEDSTACK_PRUNE=0`
+  (no MCP pruning), `ZCODE_SYSTEMONE_DECIDE=0` (decide engine off),
+  `SYSTEMONE_JEFF1=0` (GLiClass only, no Jeff-1 second head).
 
 ## Development and Usage
 

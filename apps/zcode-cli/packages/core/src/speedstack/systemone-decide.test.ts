@@ -284,3 +284,48 @@ test("decide accepts an endpoint override", async () => {
   assert.equal(answer.label, "b");
   assert.equal(calls[0]!.input, "http://127.0.0.1:9999/v1/systemone/decide");
 });
+
+test("decide honors ZCODE_SYSTEMONE_DECIDE=0 without touching the network", async () => {
+  const { impl, calls } = stubFetch(() =>
+    okResponse({
+      type: "noul",
+      label: "yes",
+      probabilities: { yes: 0.9, no: 0.1 },
+      confidence: 0.9,
+    }),
+  );
+  const answer = await decide(
+    {
+      state: "s",
+      instructions: "Is it true?",
+      type: "noul",
+    },
+    { env: { ZCODE_SYSTEMONE_DECIDE: "0" }, fetchImpl: impl },
+  );
+  assert.equal(answer, undefined);
+  assert.equal(calls.length, 0);
+});
+
+test("decide uses the $SYSTEMONE_SHIM_URL endpoint by default", async () => {
+  const { impl, calls } = stubFetch(() =>
+    okResponse({
+      type: "noul",
+      label: "yes",
+      probabilities: { yes: 0.9, no: 0.1 },
+      confidence: 0.9,
+    }),
+  );
+  const answer = await decide(
+    {
+      state: "s",
+      instructions: "Is it true?",
+      type: "noul",
+    },
+    {
+      env: { SYSTEMONE_SHIM_URL: "http://macmini:8765/" },
+      fetchImpl: impl,
+    },
+  );
+  assert.ok(answer);
+  assert.equal(calls[0]!.input, "http://macmini:8765/v1/systemone/decide");
+});

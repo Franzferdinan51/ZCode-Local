@@ -41,9 +41,29 @@ import {
 } from "./effort-tiers.js";
 import type { TurnBudgets } from "./turn-budgets.js";
 import { computeServerShortlist } from "./tool-packs.js";
+import {
+  DEFAULT_SYSTEMONE_SHIM_URL,
+  systemOneShimEndpoint,
+} from "./systemone-shim-url.js";
 
-/** Local SystemOne shim route endpoint (see systemone/shim.py). */
-export const SYSTEMONE_ROUTE_ENDPOINT = "http://127.0.0.1:8765/v1/systemone/route";
+/** Local SystemOne shim route endpoint (see systemone/shim.py).
+ *
+ * Default when $SYSTEMONE_SHIM_URL is unset — prefer
+ * resolveSystemOneRouteEndpoint() for the live value, which honors the
+ * env override. Kept as a const for callers that need a stable default
+ * (eval harness fixtures, tests).
+ */
+export const SYSTEMONE_ROUTE_ENDPOINT = `${DEFAULT_SYSTEMONE_SHIM_URL}/v1/systemone/route`;
+
+/**
+ * Resolve the route endpoint from $SYSTEMONE_SHIM_URL
+ * (see ./systemone-shim-url.js), defaulting to the localhost shim.
+ */
+export function resolveSystemOneRouteEndpoint(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return systemOneShimEndpoint("/v1/systemone/route", env);
+}
 
 /** Hard bound on the route lookup; the shim answers in ~100ms when healthy. */
 export const SYSTEMONE_ROUTE_TIMEOUT_MS = 3_000;
@@ -123,7 +143,7 @@ export async function fetchSystemOneRouteDecision(
   options?: { endpoint?: string; timeoutMs?: number },
 ): Promise<SystemOneRouteDecision | undefined> {
   if (isSystemOneDisabled()) return undefined;
-  const endpoint = options?.endpoint ?? SYSTEMONE_ROUTE_ENDPOINT;
+  const endpoint = options?.endpoint ?? resolveSystemOneRouteEndpoint();
   const timeoutMs = options?.timeoutMs ?? SYSTEMONE_ROUTE_TIMEOUT_MS;
   if (!task || !task.trim()) return undefined;
   const controller = new AbortController();

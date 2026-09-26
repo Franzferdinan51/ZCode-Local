@@ -12,9 +12,11 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import {
+  applyOnboardingStateToEnv,
   checkRequirements,
   isOnboardingSkipped,
   probeLmStudioModels,
+  probeSystemOneDecide,
   probeSystemOneShim,
   readOnboardingState,
   resolveOnboardingStatePath,
@@ -22,6 +24,7 @@ import {
   runOnboardCommand,
   runOnboardingWizard,
   shouldTriggerFirstRunOnboarding,
+  writeOnboardingState,
   type WizardIO,
 } from "./onboard.js";
 
@@ -97,15 +100,33 @@ const healthyProbes = {
   totalmemBytes: 16 * 1024 ** 3,
 };
 
-function stubFetch(models: string[] | null, shimUp: boolean): typeof fetch {
+function stubFetch(
+  models: string[] | null,
+  shimUp: boolean,
+  decideUp: boolean = shimUp,
+  decideBackend: string = "jeff1",
+): typeof fetch {
   return (async (url: unknown) => {
     const target = String(url);
     if (target.includes(":1234/v1/models")) {
       if (models === null) throw new Error("connect ECONNREFUSED");
       return { ok: true, json: async () => ({ data: models.map((id) => ({ id })) }) };
     }
-    if (target.includes(":8765/healthz")) {
-      return { ok: shimUp };
+    if (target.endsWith("/healthz")) {
+      return { ok: shimUp, status: shimUp ? 200 : 503 };
+    }
+    if (target.endsWith("/v1/systemone/decide")) {
+      if (!decideUp) throw new Error("connect ECONNREFUSED");
+      return {
+        ok: true,
+        json: async () => ({
+          type: "noul",
+          label: "yes",
+          probabilities: { yes: 0.9, no: 0.1 },
+          confidence: 0.9,
+          backend: decideBackend,
+        }),
+      };
     }
     throw new Error(`unexpected probe: ${target}`);
   }) as unknown as typeof fetch;
@@ -140,7 +161,12 @@ test("runOnboardCommand: --yes on non-TTY accepts all defaults without prompting
   assert.equal(code, 0);
   const state = readOnboardingState({}, home);
   assert.equal(state?.onboarded, true);
-  assert.deepEqual(state?.systemone, { enabled: true, jeff1: true });
+  assert.deepEqual(state?.systemone, {
+    enabled: true,
+    jeff1: true,
+    shimUrl: "http://127.0.0.1:8765",
+    decideFallback: true,
+  });
   assert.equal(state?.inference?.mode, "auto");
 });
 
@@ -271,6 +297,21 @@ test("probeLmStudioModels: lists models; null when unreachable", async () => {
 test("probeSystemOneShim: true/false from healthz", async () => {
   assert.equal(await probeSystemOneShim(stubFetch(null, true)), true);
   assert.equal(await probeSystemOneShim(stubFetch(null, false)), false);
+  assert.equal(
+    await probeSystemOneShim(stubFetch(null, true), "http://example:9999"),
+    true,
+  );
+});
+
+test("probeSystemOneDecide: ok carries the backend; false when unreachable", async () => {
+  const probe = await probeSystemOneDecide(
+    stubFetch(null, true, true, "decider"),
+  );
+  assert.equal(probe.ok, true);
+  assert.equal(probe.backend, "decider");
+  const down = await probeSystemOneDecide(stubFetch(null, true, false));
+  assert.equal(down.ok, false);
+  assert.ok(down.error);
 });
 
 // ---------------------------------------------------------------------------
@@ -286,7 +327,7 @@ function stripVolatile(statePath: string): string {
 test("wizard is idempotent: two runs against a fixture home produce the same config", async () => {
   const home = fixtureHome();
   const storageDir = resolveZCodeStorageDir({}, home);
-  const answers = ["", "fixture-api-key", "y", "y"];
+  const answers = ["1", "fixture-api-key", "", "y", "y", "y"];
   let startCalls = 0;
   const runOpts = {
     env: {},
@@ -299,7 +340,7 @@ test("wizard is idempotent: two runs against a fixture home produce the same con
   };
 
   // First run: pick model 1 + provide an API key.
-  const io1 = makeScriptedIO(["1", "fixture-api-key", "n", "y", "y"]);
+  const io1 = makeScriptedIO(["1", "fixture-api-key", "", "y", "y", "y"]);
   assert.equal(await runOnboardingWizard(io1, runOpts), 0);
   const statePath = resolveOnboardingStatePath({}, home);
   const providerPath = join(storageDir, "v2", "provider_config.json");
@@ -307,7 +348,7 @@ test("wizard is idempotent: two runs against a fixture home produce the same con
   const provider1 = readFileSync(providerPath, "utf8");
 
   // Second run: identical answers must not change anything.
-  const io2 = makeScriptedIO(["1", "fixture-api-key", "n", "y", "y"]);
+  const io2 = makeScriptedIO(["1", "fixture-api-key", "", "y", "y", "y"]);
   assert.equal(await runOnboardingWizard(io2, runOpts), 0);
   assert.equal(startCalls, 0);
   assert.equal(stripVolatile(statePath), state1);
@@ -350,8 +391,8 @@ test("wizard is idempotent: re-running with --yes keeps the same config", async 
 test("wizard: answering yes to the shim start offer calls the starter", async () => {
   const home = fixtureHome();
   // LM Studio is stubbed unreachable, so the model-pick question is skipped:
-  // answers are [apiKey, startShim, enableSystemOne, jeff1].
-  const io = makeScriptedIO(["", "y", "y", "y"]);
+  // answers are [apiKey, shimUrl, startShim, enableSystemOne, decideFallback, jeff1].
+  const io = makeScriptedIO(["", "", "y", "y", "y", "y"]);
   let startCalls = 0;
   const code = await runOnboardingWizard(io, {
     env: {},
@@ -365,6 +406,152 @@ test("wizard: answering yes to the shim start offer calls the starter", async ()
   assert.equal(code, 0);
   assert.equal(startCalls, 1);
   assert.match(io.log.join("\n"), /does not auto-start/);
+});
+
+test("wizard: custom shim URL is probed and persisted", async () => {
+  const home = fixtureHome();
+  const seen: string[] = [];
+  const inner = stubFetch(null, true);
+  const fetchImpl = (async (url: unknown) => {
+    seen.push(String(url));
+    return (inner as (url: unknown) => Promise<unknown>)(url);
+  }) as unknown as typeof fetch;
+  // Answers: [apiKey, shimUrl, enableSystemOne, decideFallback, jeff1].
+  const io = makeScriptedIO(["", "http://192.168.1.50:8765", "y", "y", "y"]);
+  const code = await runOnboardingWizard(io, {
+    env: {},
+    home,
+    probes: healthyProbes,
+    fetchImpl,
+  });
+  assert.equal(code, 0);
+  assert.ok(
+    seen.some((u) => u === "http://192.168.1.50:8765/healthz"),
+    `healthz probed at the custom URL: ${seen.join(", ")}`,
+  );
+  assert.ok(
+    seen.some((u) => u === "http://192.168.1.50:8765/v1/systemone/decide"),
+    `decide probed at the custom URL: ${seen.join(", ")}`,
+  );
+  const state = readOnboardingState({}, home);
+  assert.equal(state?.systemone?.shimUrl, "http://192.168.1.50:8765");
+  assert.match(io.log.join("\n"), /applied at runtime automatically/);
+  assert.match(
+    io.log.join("\n"),
+    /SYSTEMONE_SHIM_URL=http:\/\/192\.168\.1\.50:8765/,
+  );
+  // And the runtime overlay picks it up without any shell export.
+  const env: NodeJS.ProcessEnv = {};
+  applyOnboardingStateToEnv(env, home);
+  assert.equal(env.SYSTEMONE_SHIM_URL, "http://192.168.1.50:8765");
+});
+
+test("wizard: remote shim URL down never offers the local shim starter", async () => {
+  const home = fixtureHome();
+  // Remote URL, shim down: answers are [apiKey, shimUrl, enableSystemOne,
+  // decideFallback, jeff1] — there is NO startShim question for remotes.
+  const io = makeScriptedIO(["", "http://192.168.1.50:8765", "y", "y", "y"]);
+  let startCalls = 0;
+  const code = await runOnboardingWizard(io, {
+    env: {},
+    home,
+    probes: healthyProbes,
+    fetchImpl: stubFetch(null, false),
+    startShim: async () => {
+      startCalls += 1;
+    },
+  });
+  assert.equal(code, 0);
+  assert.equal(startCalls, 0);
+  const log = io.log.join("\n");
+  assert.match(log, /remote/);
+  assert.doesNotMatch(log, /Start the bundled shim now/);
+  assert.match(log, /degraded mode/);
+});
+
+test("wizard: invalid shim URL falls back to the default with a warning", async () => {
+  const home = fixtureHome();
+  const io = makeScriptedIO(["", "not a url", "y", "y", "y"]);
+  const code = await runOnboardingWizard(io, {
+    env: {},
+    home,
+    probes: healthyProbes,
+    fetchImpl: stubFetch(null, true),
+  });
+  assert.equal(code, 0);
+  assert.match(io.log.join("\n"), /doesn't look like a shim URL/);
+  const state = readOnboardingState({}, home);
+  assert.equal(state?.systemone?.shimUrl, "http://127.0.0.1:8765");
+});
+
+test("wizard: shim down warns and completes in degraded mode", async () => {
+  const home = fixtureHome();
+  // Answers: [apiKey, shimUrl, startShim(no), enableSystemOne, decideFallback, jeff1].
+  const io = makeScriptedIO(["", "", "n", "y", "y", "y"]);
+  const code = await runOnboardingWizard(io, {
+    env: {},
+    home,
+    probes: healthyProbes,
+    fetchImpl: stubFetch(null, false),
+    startShim: async () => {},
+  });
+  assert.equal(code, 0);
+  const log = io.log.join("\n");
+  assert.match(log, /degraded mode/);
+  assert.match(log, /continuing in degraded mode/);
+  const state = readOnboardingState({}, home);
+  assert.equal(state?.systemone?.enabled, true);
+});
+
+test("wizard: decide engine down stays fail-open", async () => {
+  const home = fixtureHome();
+  const io = makeScriptedIO(["", "", "y", "y", "y"]);
+  const code = await runOnboardingWizard(io, {
+    env: {},
+    home,
+    probes: healthyProbes,
+    fetchImpl: stubFetch(null, true, false),
+  });
+  assert.equal(code, 0);
+  assert.match(
+    io.log.join("\n"),
+    /Decide engine not answering — plan ranking stays fail-open/,
+  );
+});
+
+test("wizard: disabling the decide fallback is saved and auto-applied", async () => {
+  const home = fixtureHome();
+  const io = makeScriptedIO(["", "", "y", "n", "y"]);
+  const code = await runOnboardingWizard(io, {
+    env: {},
+    home,
+    probes: healthyProbes,
+    fetchImpl: stubFetch(null, true),
+  });
+  assert.equal(code, 0);
+  assert.match(io.log.join("\n"), /Decide engine off for this machine/);
+  const state = readOnboardingState({}, home);
+  assert.equal(state?.systemone?.decideFallback, false);
+  // The kill switch is honored at runtime without a shell export.
+  const env: NodeJS.ProcessEnv = {};
+  applyOnboardingStateToEnv(env, home);
+  assert.equal(env.ZCODE_SYSTEMONE_DECIDE, "0");
+});
+
+test("wizard --yes: shim URL defaults and the decide fallback stays on", async () => {
+  const home = fixtureHome();
+  const io = makeScriptedIO([]);
+  const code = await runOnboardingWizard(io, {
+    env: {},
+    home,
+    yes: true,
+    probes: healthyProbes,
+    fetchImpl: stubFetch(null, true),
+  });
+  assert.equal(code, 0);
+  const state = readOnboardingState({}, home);
+  assert.equal(state?.systemone?.shimUrl, "http://127.0.0.1:8765");
+  assert.equal(state?.systemone?.decideFallback, true);
 });
 
 // ---------------------------------------------------------------------------
@@ -393,4 +580,52 @@ test("onboard.ts contains no hard-coded model IDs", () => {
       `onboard.ts must not hard-code a model ID (found "${token}")`,
     );
   }
+});
+
+test("applyOnboardingStateToEnv: wizard choices apply without shell exports", () => {
+  const home = fixtureHome();
+  const storageDir = resolveZCodeStorageDir({}, home);
+  writeOnboardingState(storageDir, {
+    version: 1,
+    onboarded: true,
+    systemone: {
+      enabled: true,
+      jeff1: true,
+      shimUrl: "http://192.168.1.50:8765",
+      decideFallback: false,
+    },
+  });
+  const env: NodeJS.ProcessEnv = {};
+  applyOnboardingStateToEnv(env, home);
+  assert.equal(env.SYSTEMONE_SHIM_URL, "http://192.168.1.50:8765");
+  assert.equal(env.ZCODE_SYSTEMONE_DECIDE, "0");
+});
+
+test("applyOnboardingStateToEnv: explicit env vars win; decide-on sets nothing", () => {
+  const home = fixtureHome();
+  const storageDir = resolveZCodeStorageDir({}, home);
+  writeOnboardingState(storageDir, {
+    version: 1,
+    onboarded: true,
+    systemone: {
+      enabled: true,
+      jeff1: true,
+      shimUrl: "http://192.168.1.50:8765",
+      decideFallback: true,
+    },
+  });
+  const env: NodeJS.ProcessEnv = {
+    SYSTEMONE_SHIM_URL: "http://explicit:9999",
+  };
+  applyOnboardingStateToEnv(env, home);
+  assert.equal(env.SYSTEMONE_SHIM_URL, "http://explicit:9999");
+  assert.equal(env.ZCODE_SYSTEMONE_DECIDE, undefined);
+});
+
+test("applyOnboardingStateToEnv: no onboarding state, no-op", () => {
+  const home = fixtureHome();
+  const env: NodeJS.ProcessEnv = {};
+  applyOnboardingStateToEnv(env, home);
+  assert.equal(env.SYSTEMONE_SHIM_URL, undefined);
+  assert.equal(env.ZCODE_SYSTEMONE_DECIDE, undefined);
 });

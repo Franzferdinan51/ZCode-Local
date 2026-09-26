@@ -29,12 +29,29 @@
 /** Decision question types the shim's decide endpoint answers. */
 export type SystemOneDecideType = "choice" | "score" | "noul";
 
-/** Local SystemOne shim decide endpoint. Same shim base URL as
- * SYSTEMONE_ROUTE_ENDPOINT in ./systemone-route.ts — that config is
- * the single source of truth for the shim's address; this constant
- * only appends the decide path, it does not introduce a new URL. */
+// The shim-url module is itself import-free, so importing it keeps this
+// module runnable under plain `node --test` type-stripping.
+import {
+  DEFAULT_SYSTEMONE_SHIM_URL,
+  systemOneShimEndpoint,
+} from "./systemone-shim-url.js";
+
+/** Local SystemOne shim decide endpoint. The shim base URL is resolved
+ * from $SYSTEMONE_SHIM_URL (see ./systemone-shim-url.js) — this constant
+ * is only the default; prefer resolveSystemOneDecideEndpoint() for the
+ * live value. */
 export const SYSTEMONE_DECIDE_ENDPOINT =
-  "http://127.0.0.1:8765/v1/systemone/decide";
+  `${DEFAULT_SYSTEMONE_SHIM_URL}/v1/systemone/decide`;
+
+/**
+ * Resolve the decide endpoint from $SYSTEMONE_SHIM_URL
+ * (see ./systemone-shim-url.js), defaulting to the localhost shim.
+ */
+export function resolveSystemOneDecideEndpoint(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return systemOneShimEndpoint("/v1/systemone/decide", env);
+}
 
 /** Hard bound on one decide lookup; the shim answers in ~100ms healthy. */
 export const SYSTEMONE_DECIDE_TIMEOUT_MS = 8_000;
@@ -58,6 +75,13 @@ const DECIDE_PROBABILITY_SUM_TOLERANCE = 0.02;
 // duplicated here so this module keeps zero runtime imports
 // (node --test type-stripping).
 const SYSTEMONE_MASTER_KILL_SWITCH_ENV = "ZCODE_SYSTEMONE";
+
+/**
+ * Kill-switch (env): set `ZCODE_SYSTEMONE_DECIDE=0` to disable the
+ * decide engine — the plan-ranking decider fallback and direct decide()
+ * calls both return undefined (fail-open). Route lookups are unaffected.
+ */
+export const SYSTEMONE_DECIDE_KILL_SWITCH_ENV = "ZCODE_SYSTEMONE_DECIDE";
 
 /** One decide request. */
 export interface SystemOneDecideRequest {
@@ -183,8 +207,9 @@ export type DecideFetchImpl = (
 
 /**
  * POST a decide question to the SystemOne shim. Fail-open: master
- * kill-switch, empty state, shim down, timeout, non-200, or an
- * unparseable answer all return undefined. Never throws.
+ * kill-switch, decide kill-switch (ZCODE_SYSTEMONE_DECIDE=0), empty
+ * state, shim down, timeout, non-200, or an unparseable answer all
+ * return undefined. Never throws.
  */
 export async function decide(
   request: SystemOneDecideRequest,
@@ -198,6 +223,7 @@ export async function decide(
   try {
     const env = options?.env ?? process.env;
     if (env[SYSTEMONE_MASTER_KILL_SWITCH_ENV] === "0") return undefined;
+    if (env[SYSTEMONE_DECIDE_KILL_SWITCH_ENV] === "0") return undefined;
     const state = typeof request?.state === "string" ? request.state : "";
     const instructions =
       typeof request?.instructions === "string" ? request.instructions : "";
@@ -213,7 +239,8 @@ export async function decide(
           ? Object.keys(request.criteria)
           : [];
     if (offeredIds.length === 0) return undefined;
-    const endpoint = options?.endpoint ?? SYSTEMONE_DECIDE_ENDPOINT;
+    const endpoint =
+      options?.endpoint ?? resolveSystemOneDecideEndpoint(env);
     const timeoutMs = options?.timeoutMs ?? SYSTEMONE_DECIDE_TIMEOUT_MS;
     const fetchImpl = options?.fetchImpl ?? globalThis.fetch.bind(globalThis);
     const body: Record<string, unknown> = {

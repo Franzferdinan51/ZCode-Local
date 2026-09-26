@@ -2,6 +2,7 @@ import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, parse, resolve } from "node:path";
 import { config as loadDotenv } from "dotenv";
+import { applyOnboardingStateToEnv } from "./onboard.js";
 import {
   ZCODE_RUNTIME_ENV_KEY,
   buildZCodeToolEnvPassthroughEnv,
@@ -114,6 +115,16 @@ export function shouldLoadCliDotenvForProtocolServer(env: CliEnv): boolean {
 function applyCliRuntimeEnvDefaults(env: CliEnv, argv: readonly string[]): void {
   env[ZCODE_RUNTIME_ENV_KEY] = resolveCliRuntimeEnv(env, argv);
   applyBetaStorageDefault(env, argv);
+  // The onboard wizard's SystemOne choices (custom shim URL, decide
+  // fallback) live in onboarding.json; overlay them here so they are
+  // honored at runtime without the user exporting anything. Explicit env
+  // vars always win. Best-effort: a broken/unreadable onboarding state
+  // must never fail startup.
+  try {
+    applyOnboardingStateToEnv(env);
+  } catch {
+    // ignore — startup must not fail on onboarding state
+  }
 }
 
 function resolveCliRuntimeEnv(env: CliEnv, argv: readonly string[]): ZCodeRuntimeEnv {
