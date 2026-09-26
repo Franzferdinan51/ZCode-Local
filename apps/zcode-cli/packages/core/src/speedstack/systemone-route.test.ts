@@ -16,6 +16,13 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { test } from "node:test";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+// Hermetic decision logging: the fetch path appends records; point it at
+// /dev/null-equivalent so tests never touch the real log.
+process.env.ZCODE_SYSTEMONE_DECISION_LOG = "0";
 
 import {
   adjustEffortForUncertainty,
@@ -676,4 +683,193 @@ test("resolveSystemOneBehaviorPolicy without uncertainty is unchanged", () => {
   );
   assert.equal(resolution.tier, "low");
   assert.equal(resolution.uncertainBump, undefined);
+});
+
+test("fetch parses ranked_models in best-value order", async () => {
+  const payload = {
+    route: {
+      tier: "balanced",
+      confidence: 0.68,
+      ranked_models: [
+        { model_id: "model-a", tier: "balanced", utility: 0.91, quality: 0.8, cost: 0.2 },
+        { model_id: "model-b", tier: "economy", utility: 0.42 },
+        { not_a_model: true },
+        { model_id: "  ", tier: "heavy", utility: 0.5 },
+        { model_id: "model-c", tier: "heavy", utility: "high" },
+      ],
+    },
+  };
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(payload));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const decision = await fetchSystemOneRouteDecision("pick a model", {
+      endpoint: `http://127.0.0.1:${address.port}/v1/systemone/route`,
+      timeoutMs: 2000,
+    });
+    assert.ok(decision);
+    assert.equal(decision.rankedModels?.length, 2);
+    assert.equal(decision.rankedModels?.[0]?.modelId, "model-a");
+    assert.equal(decision.rankedModels?.[0]?.utility, 0.91);
+    assert.equal(decision.rankedModels?.[1]?.modelId, "model-b");
+  } finally {
+    server.close();
+  }
+});
+
+test("fetch parses jeff1_second_opinion (decider-backed advisory)", async () => {
+  const payload = {
+    route: {
+      tier: "balanced",
+      confidence: 0.52,
+      uncertain: true,
+      jeff1_second_opinion: {
+        tier: "heavy",
+        confidence: 0.61,
+        agree: false,
+        rationale: "task mentions long-context synthesis",
+      },
+    },
+  };
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(payload));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const decision = await fetchSystemOneRouteDecision("tricky task", {
+      endpoint: `http://127.0.0.1:${address.port}/v1/systemone/route`,
+      timeoutMs: 2000,
+    });
+    assert.ok(decision);
+    assert.deepEqual(decision.secondOpinion, {
+      tier: "heavy",
+      agree: false,
+      confidence: 0.61,
+      rationale: "task mentions long-context synthesis",
+    });
+  } finally {
+    server.close();
+  }
+});
+
+test("fetch ignores a malformed jeff1_second_opinion", async () => {
+  const payload = { route: { tier: "economy", confidence: 0.9, jeff1_second_opinion: { agree: true } } };
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(payload));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const decision = await fetchSystemOneRouteDecision("x", {
+      endpoint: `http://127.0.0.1:${address.port}/v1/systemone/route`,
+      timeoutMs: 2000,
+    });
+    assert.ok(decision);
+    assert.equal(decision.secondOpinion, undefined);
+  } finally {
+    server.close();
+  }
+});
+
+test("model target prefers the ranked best-value model over route.model_id", () => {
+  const target = resolveSystemOneModelTarget({
+    route: route({
+      modelId: "routed-model",
+      rankedModels: [
+        { modelId: "best-value-model", tier: "balanced", utility: 0.95 },
+        { modelId: "second", tier: "economy", utility: 0.5 },
+      ],
+    }),
+    modelRouting: true,
+    currentModelId: "test-model",
+  });
+  assert.equal(target, "best-value-model");
+});
+
+test("model target falls back to route.model_id when the ranking is absent", () => {
+  assert.equal(
+    resolveSystemOneModelTarget({
+      route: route({ modelId: "routed-model", rankedModels: undefined }),
+      modelRouting: true,
+      currentModelId: "test-model",
+    }),
+    "routed-model",
+  );
+  assert.equal(
+    resolveSystemOneModelTarget({
+      route: route({ modelId: "routed-model", rankedModels: [] }),
+      modelRouting: true,
+      currentModelId: "test-model",
+    }),
+    "routed-model",
+  );
+});
+
+test("model target skips the retarget when the ranked pick is already loaded", () => {
+  assert.equal(
+    resolveSystemOneModelTarget({
+      route: route({
+        modelId: "routed-model",
+        rankedModels: [{ modelId: "test-model", tier: "economy", utility: 0.9 }],
+      }),
+      modelRouting: true,
+      currentModelId: "test-model",
+    }),
+    undefined,
+  );
+});
+
+test("fetch appends a route decision record to the log path", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "zcode-decision-log-"));
+  const logPath = join(dir, "records.jsonl");
+  process.env.ZCODE_SYSTEMONE_DECISION_LOG = logPath;
+  try {
+    const payload = {
+      route: {
+        tier: "balanced",
+        confidence: 0.68,
+        probabilities: { economy: 0.18, balanced: 0.54, heavy: 0.28 },
+        ranked_models: [{ model_id: "model-a", tier: "balanced", utility: 0.91 }],
+      },
+    };
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(payload));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      assert.ok(address && typeof address === "object");
+      const decision = await fetchSystemOneRouteDecision("summarize this doc", {
+        endpoint: `http://127.0.0.1:${address.port}/v1/systemone/route`,
+        timeoutMs: 2000,
+      });
+      assert.ok(decision);
+    } finally {
+      server.close();
+    }
+    const lines = readFileSync(logPath, "utf8").trim().split("\n");
+    assert.equal(lines.length, 1);
+    const record = JSON.parse(lines[0]);
+    assert.equal(record.kind, "route");
+    assert.equal(record.tier, "balanced");
+    assert.equal(record.confidence, 0.68);
+    assert.equal(record.taskChars, "summarize this doc".length);
+    assert.ok(Math.abs(record.margin - (0.54 - 0.28)) < 1e-9);
+    assert.deepEqual(record.rankedModels, [
+      { modelId: "model-a", tier: "balanced", utility: 0.91 },
+    ]);
+    assert.ok(typeof record.ts === "string");
+  } finally {
+    process.env.ZCODE_SYSTEMONE_DECISION_LOG = "0";
+  }
 });

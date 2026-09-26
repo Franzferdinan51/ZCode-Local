@@ -167,8 +167,10 @@ export {
   type SystemOneBehaviorPolicyResolution,
   type McpAttachPolicy,
   type McpToolLevelPolicy,
+  type RankedModel,
   type RankedTool,
   type ResolveMcpAttachPolicyOptions,
+  type SecondOpinion,
   type SystemOneRouteDecision,
   type SystemOneRouteHolder,
   type UncertainEffortAdjustment,
@@ -257,3 +259,11 @@ export {
   type DoomLoopTransition,
   type DoomLoopTurnState,
 } from "./doom-loop.js";
+export {
+  SYSTEMONE_DECISION_LOG_ENV,
+  appendDecisionRecord,
+  resolveDecisionLogPath,
+  type SystemOneDecideLogRecord,
+  type SystemOneDecisionLogRecord,
+  type SystemOneRouteLogRecord,
+} from "./systemone-decision-log.js";

@@ -13,6 +13,7 @@ import {
 import { formatCliHelp } from "./help.js";
 import { maybeRunFirstTimeOnboarding, runOnboardCommand } from "./onboard.js";
 import { runHooksCommand } from "./hooks-trust-command.js";
+import { runDecideCommand } from "./decide-command.js";
 import { detectCliLocale } from "./locale.js";
 import { loadBootstrapModule } from "./bootstrap-loader.js";
 import { runEmbeddedSearchCli } from "./internal-search/embedded-search-cli.js";
@@ -330,6 +331,13 @@ export const run = async (ctx: RunContext, deps: RunDependencies = {}): Promise<
 
   if (ctx.argv[0] === "hooks") {
     return await runHooksCommand(ctx, deps, version);
+  }
+
+  // Direct SystemOne decision-engine query: `zcode decide --type ...`.
+  // Dispatched before global arg parsing like `hooks` — it takes its own
+  // flags and must not be swallowed by the agent prompt path.
+  if (ctx.argv[0] === "decide") {
+    return await runDecideCommand(ctx);
   }
 
   let parsed: ReturnType<typeof parseGlobalArgs>;

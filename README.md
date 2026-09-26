@@ -116,6 +116,35 @@ sidecar runs on the Windows PC (on by default; `SYSTEMONE_JEFF1=0` runs
 GLiClass-only) and fails open with no behavior change when down or slow. It
 never loads, unloads, switches, or competes with the loaded worker model.
 
+**Model pick, second opinions, and decision records**
+
+- **Best-value model pick:** the route response carries `ranked_models` —
+  registry models ordered by expected utility. The model target now takes the
+  top-ranked model as its pick (no hard-coded IDs — the ID always comes from
+  the shim), falling back to `route.model_id` when the field is absent.
+- **`zcode decide`:** the decide engine is callable directly, with no extra
+  setup — the bundled shim starts as usual:
+  `zcode decide --type choice|score|noul --state "..." --instructions "..."
+  [--criteria label=description ...] [--gold label] [--json] [--timeout-ms N]`.
+  Choice takes labeled alternatives, `noul` is plain yes/no (no criteria),
+  `score` requires labels `0..n-1`. A down shim prints a clear error and
+  exits 1 (fail-open for the rest of the CLI).
+- **Decision records:** every route and decide decision appends one JSONL
+  record to `~/.config/zcode/systemone-decision-records.jsonl` (respects
+  `XDG_CONFIG_HOME`; no setup needed). Records carry type, labels, probability
+  vector, chosen label, and confidence — plus the outcome index (`gold`)
+  whenever it is knowable, in a shape compatible with SystemOne's calibration
+  tooling. `ZCODE_SYSTEMONE_DECISION_LOG` overrides the path; setting it to
+  `0` disables logging. Writes are best-effort: an unwritable log never
+  breaks a turn or a decide call.
+- **Second-opinion diagnostics:** when the shim returns its advisory second
+  opinion (`jeff1_second_opinion`, historical name), agreement is logged at
+  info and disagreement at warn; the routed tier never changes — advisory
+  only. If the shim is unreachable at runtime, one warning per process
+  ("SystemOne shim unreachable; continuing without routing (fail-open)")
+  replaces the old debug-only note — unless `ZCODE_SYSTEMONE=0`
+  intentionally disables SystemOne.
+
 Kill switches (each disables only its own surface; all default on):
 
 - `ZCODE_SYSTEMONE=0` — all SystemOne integration

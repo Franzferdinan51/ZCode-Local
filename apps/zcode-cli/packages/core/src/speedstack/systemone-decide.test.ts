@@ -8,6 +8,9 @@
 // - observability: latency_ms/backend carried through
 // - HTTP layer is injected (fetchImpl); no network ever.
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 
 import {
@@ -41,7 +44,11 @@ function stubFetch(handler: () => Promise<Response> | Response): {
   return { impl, calls };
 }
 
-const ENV_ON: NodeJS.ProcessEnv = { ZCODE_SYSTEMONE: "1" };
+const ENV_ON: NodeJS.ProcessEnv = {
+  ZCODE_SYSTEMONE: "1",
+  // Hermetic: decide() appends decision records; never touch the real log.
+  ZCODE_SYSTEMONE_DECISION_LOG: "0",
+};
 
 test("buildDecideChoiceRequest slices state to the char budget", () => {
   const request = buildDecideChoiceRequest(
@@ -328,4 +335,69 @@ test("decide uses the $SYSTEMONE_SHIM_URL endpoint by default", async () => {
   );
   assert.ok(answer);
   assert.equal(calls[0]!.input, "http://macmini:8765/v1/systemone/decide");
+});
+
+test("decide appends a fit-compatible record with gold when goldLabel is offered", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "zcode-decide-log-"));
+  const logPath = join(dir, "records.jsonl");
+  const env: NodeJS.ProcessEnv = {
+    ZCODE_SYSTEMONE: "1",
+    ZCODE_SYSTEMONE_DECISION_LOG: logPath,
+  };
+  const { impl } = stubFetch(() =>
+    okResponse({
+      type: "choice",
+      label: "b",
+      probabilities: { a: 0.25, b: 0.75 },
+      confidence: 0.75,
+      latency_ms: 231,
+      backend: "decider",
+    }),
+  );
+  const answer = await decide(
+    buildDecideChoiceRequest("Pick one.", "Choose wisely.", {
+      a: "first",
+      b: "second",
+    }),
+    { fetchImpl: impl, env, goldLabel: "b" },
+  );
+  assert.ok(answer);
+  assert.equal(answer.label, "b");
+  const lines = readFileSync(logPath, "utf8").trim().split("\n");
+  assert.equal(lines.length, 1);
+  const record = JSON.parse(lines[0]);
+  assert.equal(record.kind, "decide");
+  assert.equal(record.type, "choice");
+  assert.deepEqual(record.labels, ["a", "b"]);
+  assert.deepEqual(record.probs, [0.25, 0.75]);
+  assert.equal(record.label, "b");
+  assert.equal(record.gold, 1);
+  assert.equal(record.backend, "decider");
+  assert.equal(record.latencyMs, 231);
+});
+
+test("decide omits gold when the outcome is not knowable", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "zcode-decide-log-"));
+  const logPath = join(dir, "records.jsonl");
+  const env: NodeJS.ProcessEnv = {
+    ZCODE_SYSTEMONE: "1",
+    ZCODE_SYSTEMONE_DECISION_LOG: logPath,
+  };
+  const { impl } = stubFetch(() =>
+    okResponse({
+      type: "noul",
+      label: "yes",
+      probabilities: { yes: 0.9, no: 0.1 },
+      confidence: 0.9,
+    }),
+  );
+  const answer = await decide(
+    { state: "Is it up?", instructions: "Answer yes/no.", type: "noul" },
+    { fetchImpl: impl, env },
+  );
+  assert.ok(answer);
+  const record = JSON.parse(readFileSync(logPath, "utf8").trim());
+  assert.equal(record.kind, "decide");
+  assert.equal(record.type, "noul");
+  assert.equal("gold" in record, false);
 });

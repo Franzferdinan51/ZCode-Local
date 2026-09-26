@@ -16,6 +16,7 @@ export const zhCN: ZCodeCopy = {
 
 命令:
   app-server 运行 ZCode Protocol stdio app server
+  decide     直接调用 SystemOne 决策引擎（choice/score/noul）
   commands   列出自定义 slash commands（\`commands list\`）
   doctor     检查运行时和打包假设
   logout     删除本地保存的 Provider 凭据

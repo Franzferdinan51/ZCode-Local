@@ -16,6 +16,7 @@ With no command, zcode opens the full-screen TUI.
 
 Commands:
   app-server Run the ZCode Protocol stdio app server
+  decide     Ask the SystemOne decision engine a choice/score/noul question
   commands   List custom slash commands (\`commands list\`)
   doctor     Inspect runtime and packaging assumptions
   logout     Remove locally stored provider credentials

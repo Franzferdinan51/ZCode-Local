@@ -45,6 +45,7 @@ import {
   DEFAULT_SYSTEMONE_SHIM_URL,
   systemOneShimEndpoint,
 } from "./systemone-shim-url.js";
+import { appendDecisionRecord } from "./systemone-decision-log.js";
 
 /** Local SystemOne shim route endpoint (see systemone/shim.py).
  *
@@ -117,6 +118,19 @@ export interface SystemOneRouteDecision {
    */
   readonly rankedTools?: readonly RankedTool[] | undefined;
   /**
+   * Shim's expected-utility model ranking (advisory, best-value first).
+   * Z0 model routing consumes the top entry; absent/empty on older shims
+   * or when the registry can't rank — never an error.
+   */
+  readonly rankedModels?: readonly RankedModel[] | undefined;
+  /**
+   * Advisory tier second opinion the shim computed for uncertain routes
+   * (wire name `jeff1_second_opinion`; decider-backed now, the name is
+   * historical). Never changes the routed tier. Absent unless the route
+   * was uncertain.
+   */
+  readonly secondOpinion?: SecondOpinion | undefined;
+  /**
    * Per-tier classification scores, preserved verbatim from the shim's
    * `probabilities` payload when present. Never consumed by current
    * policy thresholds (those stay confidence-gated); carried end-to-end
@@ -131,6 +145,30 @@ export interface RankedTool {
   readonly id: string;
   readonly relevance: number;
   readonly kind?: string | undefined;
+}
+
+/**
+ * One entry of the shim's ranked_models surface (best-value first).
+ * Model ids come from the shim's registry — never hard-coded here.
+ */
+export interface RankedModel {
+  readonly modelId: string;
+  readonly tier: string;
+  readonly utility: number;
+  readonly quality?: number | undefined;
+  readonly cost?: number | undefined;
+}
+
+/**
+ * The shim's advisory tier second opinion on an uncertain route
+ * (wire name `jeff1_second_opinion`; decider-backed since the
+ * decider-only sidecar — the name is historical).
+ */
+export interface SecondOpinion {
+  readonly tier: string;
+  readonly agree: boolean;
+  readonly confidence?: number | undefined;
+  readonly rationale?: string | undefined;
 }
 
 /**
@@ -156,11 +194,51 @@ export async function fetchSystemOneRouteDecision(
       signal: controller.signal,
     });
     if (!response.ok) return undefined;
-    return parseRouteDecision(await response.json());
+    const decision = parseRouteDecision(await response.json());
+    logRouteDecision(task, decision);
+    return decision;
   } catch {
     return undefined;
   } finally {
     clearTimeout(timer);
+  }
+}
+
+/**
+ * Best-effort decision-record logging for the calibration battery
+ * (see ./systemone-decision-log.ts). Never throws; a logging failure
+ * must not affect routing.
+ */
+function logRouteDecision(
+  task: string,
+  decision: SystemOneRouteDecision | undefined,
+): void {
+  try {
+    if (!decision) return;
+    const margin = routeTierMargin(decision);
+    appendDecisionRecord({
+      kind: "route",
+      ts: new Date().toISOString(),
+      tier: decision.tier,
+      confidence: decision.confidence,
+      ...(decision.uncertain !== undefined
+        ? { uncertain: decision.uncertain }
+        : {}),
+      ...(margin !== undefined ? { margin } : {}),
+      ...(decision.modelId ? { modelId: decision.modelId } : {}),
+      ...(decision.rankedModels
+        ? {
+            rankedModels: decision.rankedModels.map((m) => ({
+              modelId: m.modelId,
+              tier: m.tier,
+              utility: m.utility,
+            })),
+          }
+        : {}),
+      taskChars: task.length,
+    });
+  } catch {
+    // logging never breaks routing
   }
 }
 
@@ -180,6 +258,8 @@ function parseRouteDecision(payload: unknown): SystemOneRouteDecision | undefine
     modelId?: string;
     uncertain?: boolean;
     rankedTools?: RankedTool[];
+    rankedModels?: RankedModel[];
+    secondOpinion?: SecondOpinion;
     tierScores?: Readonly<Record<string, number>>;
   } = { tier, confidence };
   if (typeof record["effort"] === "string") decision.effort = record["effort"];
@@ -204,6 +284,51 @@ function parseRouteDecision(payload: unknown): SystemOneRouteDecision | undefine
       });
     }
     if (parsed.length > 0) decision.rankedTools = parsed;
+  }
+  const rankedModels = record["ranked_models"];
+  if (Array.isArray(rankedModels)) {
+    const parsed: RankedModel[] = [];
+    for (const item of rankedModels) {
+      if (!item || typeof item !== "object") continue;
+      const entry = item as Record<string, unknown>;
+      const modelId = entry["model_id"];
+      const tier = entry["tier"];
+      const utility = entry["utility"];
+      if (typeof modelId !== "string" || modelId.trim().length === 0) {
+        continue;
+      }
+      if (typeof tier !== "string") continue;
+      if (typeof utility !== "number" || !Number.isFinite(utility)) continue;
+      const quality = entry["quality"];
+      const cost = entry["cost"];
+      parsed.push({
+        modelId: modelId.trim(),
+        tier,
+        utility,
+        ...(typeof quality === "number" && Number.isFinite(quality)
+          ? { quality }
+          : {}),
+        ...(typeof cost === "number" && Number.isFinite(cost) ? { cost } : {}),
+      });
+    }
+    if (parsed.length > 0) decision.rankedModels = parsed;
+  }
+  const rawOpinion = record["jeff1_second_opinion"];
+  if (rawOpinion && typeof rawOpinion === "object") {
+    const entry = rawOpinion as Record<string, unknown>;
+    const tier = entry["tier"];
+    if (typeof tier === "string" && tier.length > 0) {
+      const confidence = entry["confidence"];
+      const rationale = entry["rationale"];
+      decision.secondOpinion = {
+        tier,
+        agree: entry["agree"] !== false,
+        ...(typeof confidence === "number" && Number.isFinite(confidence)
+          ? { confidence }
+          : {}),
+        ...(typeof rationale === "string" ? { rationale } : {}),
+      };
+    }
   }
   if (
     typeof record["model_id"] === "string" &&
@@ -272,7 +397,14 @@ export function resolveSystemOneModelTarget(input: {
 }): string | undefined {
   try {
     if (!input.modelRouting) return undefined;
-    const modelId = input.route?.modelId;
+    // Best-value pick first: the shim's expected-utility ranking names the
+    // top model. Falls back to the route's own model_id when the shim
+    // didn't rank (older shims). The id always comes from the shim — never
+    // hard-coded here.
+    const ranked = input.route?.rankedModels?.[0]?.modelId;
+    const routed = input.route?.modelId;
+    const modelId =
+      ranked && ranked.length > 0 ? ranked : routed;
     if (!modelId || modelId.length === 0) return undefined;
     if (input.currentModelId && modelId === input.currentModelId) return undefined;
     return modelId;

@@ -35,6 +35,7 @@ import {
   DEFAULT_SYSTEMONE_SHIM_URL,
   systemOneShimEndpoint,
 } from "./systemone-shim-url.js";
+import { appendDecisionRecord } from "./systemone-decision-log.js";
 
 /** Local SystemOne shim decide endpoint. The shim base URL is resolved
  * from $SYSTEMONE_SHIM_URL (see ./systemone-shim-url.js) — this constant
@@ -225,6 +226,13 @@ export async function decide(
     timeoutMs?: number;
     env?: NodeJS.ProcessEnv;
     fetchImpl?: DecideFetchImpl;
+    /**
+     * Label id of the known-correct answer. Recorded as `gold` in the
+     * decision log so SystemOne's calibration battery (fit_types.py) can
+     * fit per-type temperatures from real outcomes. Omit when the outcome
+     * is not knowable.
+     */
+    goldLabel?: string;
   },
 ): Promise<SystemOneDecideAnswer | undefined> {
   try {
@@ -266,7 +274,11 @@ export async function decide(
         signal: controller.signal,
       });
       if (!response.ok) return undefined;
-      return validateDecideAnswer(await response.json(), type, offeredIds) ?? undefined;
+      const answer =
+        validateDecideAnswer(await response.json(), type, offeredIds) ??
+        undefined;
+      logDecideAnswer(type, offeredIds, answer, options?.goldLabel, env);
+      return answer;
     } catch {
       return undefined;
     } finally {
@@ -274,5 +286,48 @@ export async function decide(
     }
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * Best-effort decision-record logging for the calibration battery
+ * (see ./systemone-decision-log.ts). The record matches the
+ * fit_types.py shape (labels/probs aligned, gold = outcome index when
+ * knowable). Never throws; a logging failure must not affect decide.
+ */
+function logDecideAnswer(
+  type: SystemOneDecideType,
+  offeredIds: readonly string[],
+  answer: SystemOneDecideAnswer | undefined,
+  goldLabel: string | undefined,
+  env: NodeJS.ProcessEnv,
+): void {
+  try {
+    if (!answer) return;
+    const probs = offeredIds.map(
+      (id) => answer.probabilities[id] ?? Number.NaN,
+    );
+    if (probs.some((p) => !Number.isFinite(p))) return;
+    const gold =
+      typeof goldLabel === "string" ? offeredIds.indexOf(goldLabel) : -1;
+    appendDecisionRecord(
+      {
+      kind: "decide",
+      ts: new Date().toISOString(),
+      type,
+      labels: [...offeredIds],
+      probs,
+      label: answer.label,
+      ...(gold >= 0 ? { gold } : {}),
+      confidence: answer.confidence,
+      ...(answer.backend ? { backend: answer.backend } : {}),
+      ...(answer.latencyMs !== undefined
+        ? { latencyMs: answer.latencyMs }
+        : {}),
+      },
+      env,
+    );
+  } catch {
+    // logging never breaks decide
   }
 }
