@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.27.0 (2026-09-26)
+
+### Features
+
+* SystemOne decision engine integration
+  * New typed-decision client (`systemone-decide.ts`): choice/score/noul decisions with calibrated probabilities, strict response validation, fail-open on anything unexpected
+  * Plan ranking falls back to the decider when `/v1/systemone/rank-plans` is unreachable — picks the winning plan by decision instead of silently running the first candidate
+  * Configurable shim URL (`systemone-shim-url.ts`); `ZCODE_SYSTEMONE_DECIDE=0` kill switch
+* Onboarding wizard: shim URL prompt (default localhost:8765, env-overridable), live decide-endpoint probe, fail-open degraded setup when the shim is down; choices persist to `~/.zcode-local/v2/onboarding.json`
+
 ## 3.26.0 (2026-09-24)
 
 ### Features
