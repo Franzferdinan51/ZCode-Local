@@ -43,6 +43,7 @@ const SHIM_FILES = [
   "api.py",
   "calibration.py",
   "cli.py",
+  "clef_backend.py",
   "client.py",
   "jeff1.py",
   "jeff1_sidecar.py",

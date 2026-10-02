@@ -28,3 +28,11 @@ gliclass @ git+https://github.com/Franzferdinan51/GLiClass
 # to run `python -m systemone.mcp_server`):
 # mcp<2
 # pyjwt>=2.15
+#
+# Clef engine extra (matches upstream `systemone[clef]`; only needed for
+# SYSTEMONE_ENGINE=clef — Cloudflare clef/clef-flash weights, run locally):
+# torch>=2.0
+# transformers>=5.0
+# huggingface_hub>=0.20
+# safetensors>=0.4
+# pillow>=9

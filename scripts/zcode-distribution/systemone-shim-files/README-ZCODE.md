@@ -11,8 +11,8 @@ systemone serve --port 8765 --engine auto      # preferred (needs `systemone` on
 python3.11 -m systemone.shim --port 8765       # fallback; cwd: the ZCode release root
 ```
 
-`--engine` accepts `auto|local|sglang|jevk5|onnx|jev|kev` (default: the
-`SYSTEMONE_ENGINE` env var, else `auto`). Served endpoints: `GET
+`--engine` accepts `auto|local|sglang|jevk5|onnx|jev|kev|clef` (default:
+the `SYSTEMONE_ENGINE` env var, else `auto`). Served endpoints: `GET
 /,/healthz,/openapi.json,/metrics,/v1/decide/info` and `POST
 /v1/systemone,/v1/decisions,/v1/decide,/v1/systemone/route,/v1/systemone/rank-plans,/v1/systemone/decide,/v1/systemone/permute`.
 
@@ -42,6 +42,12 @@ never broken because the router is missing.
   `huggingface_hub`, `gliclass` for the default `auto`/`local` engine
   (see `requirements.txt`). On a fresh machine:
   `pip install -r requirements.txt`.
+- For `SYSTEMONE_ENGINE=clef` (Cloudflare clef/clef-flash weights, run
+  locally): `torch`, `transformers>=5`, `huggingface_hub`, `safetensors`,
+  `pillow` — the requirements file carries them commented (upstream
+  `systemone[clef]`); uncomment to install. `CLEF_MODEL_ID` (default
+  `Cloudflare/clef-flash`), `CLEF_DEVICE`, `CLEF_DTYPE`,
+  `CLEF_MAX_LENGTH` configure the load.
 - The GLiClass model `knowledgator/gliclass-edge-v3.0`, fetched from
   Hugging Face on first run and cached in `~/.cache/huggingface`
   (honors `HF_HOME` / `TRANSFORMERS_CACHE`). After the first download the

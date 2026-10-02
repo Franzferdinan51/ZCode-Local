@@ -81,6 +81,7 @@ from .patterns import (
 from .jev_backend import JevDecideBackend, JevError
 from .jevk5_backend import JevK5Error, JevK5ServerBackend
 from .kev_backend import KevBackend, KevError
+from .clef_backend import ClefBackend, ClefError
 from .rotation import RotationAveraged
 from .loop import ActResult, DecisionLoop, LoopResult, Observation, Step, run_loop
 from .rerank_backend import OnnxCrossEncoder, RerankBackend
@@ -102,6 +103,8 @@ __all__ = [
     "JevK5Error",
     "KevBackend",
     "KevError",
+    "ClefBackend",
+    "ClefError",
     "RotationAveraged",
     "JevDecideBackend",
     "JevError",

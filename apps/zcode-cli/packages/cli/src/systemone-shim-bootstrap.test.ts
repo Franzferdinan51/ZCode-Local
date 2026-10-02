@@ -125,6 +125,11 @@ test("requiredShimImports: slim floor + local weights only when needed", () => {
     "numpy",
     "onnxruntime",
   ]);
+  assert.deepEqual(requiredShimImports({ SYSTEMONE_ENGINE: "clef" }), [
+    "numpy",
+    "torch",
+    "transformers",
+  ]);
 });
 
 test("resolveShimSpawnCommand prefers `systemone serve`, falls back to -m", async () => {

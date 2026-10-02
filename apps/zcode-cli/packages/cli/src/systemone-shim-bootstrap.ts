@@ -10,7 +10,7 @@
 // (`<release>/systemone`, the `systemone` Python package) as a detached
 // background process:
 //
-//   systemone serve --port 8765 [--engine auto|local|sglang|jevk5|onnx|jev|kev]
+//   systemone serve --port 8765 [--engine auto|local|sglang|jevk5|onnx|jev|kev|clef]
 // (preferred when the `systemone` console script is on PATH; the engine
 // flag defaults to $SYSTEMONE_ENGINE, else auto), else:
 //
@@ -38,7 +38,7 @@
 //                            http://127.0.0.1:8765); remote URLs are
 //                            never auto-started
 //   SYSTEMONE_ENGINE         engine the spawned shim serves
-//                            (auto|local|sglang|jevk5|onnx|jev|kev)
+//                            (auto|local|sglang|jevk5|onnx|jev|kev|clef)
 
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -238,7 +238,9 @@ async function resolveOnPath(
  * Slim floor is always `numpy`; the torch/GLiClass stack (`gliclass`)
  * is required only when a local engine will actually load weights
  * (explicit `local`, or `auto` with no remote engine configured);
- * `onnx` needs `onnxruntime` instead. Exported for tests.
+ * `onnx` needs `onnxruntime` instead, and `clef` needs the
+ * torch/transformers stack (which pulls huggingface_hub/safetensors;
+ * pillow is only needed for image inputs). Exported for tests.
  */
 export function requiredShimImports(
   env: NodeJS.ProcessEnv = process.env,
@@ -246,6 +248,7 @@ export function requiredShimImports(
   try {
     const engine = (env.SYSTEMONE_ENGINE ?? "auto").trim().toLowerCase();
     if (engine === "onnx") return ["numpy", "onnxruntime"];
+    if (engine === "clef") return ["numpy", "torch", "transformers"];
     if (
       engine === "sglang" ||
       engine === "jevk5" ||

@@ -159,6 +159,7 @@ except ImportError:  # slim install (no torch/gliclass): SGLang-engine or
 from .jev_backend import JevDecideBackend
 from .jevk5_backend import JevK5ServerBackend
 from .kev_backend import KevBackend
+from .clef_backend import ClefBackend
 from .rerank_backend import OnnxCrossEncoder, RerankBackend
 from .sglang_backend import HybridBackend, SGLangBackend
 from .scoring import (
@@ -2380,7 +2381,7 @@ def _win32_detach(argv: list[str]) -> bool:
 # -- baked-in engine selection (local GLiClass vs SGLang) --------------------
 
 ENGINE_ENV = "SYSTEMONE_ENGINE"
-ENGINE_CHOICES = ("auto", "local", "sglang", "jevk5", "onnx", "jev", "kev")
+ENGINE_CHOICES = ("auto", "local", "sglang", "jevk5", "onnx", "jev", "kev", "clef")
 
 
 def engine_backend_name(engine: Any) -> str:
@@ -2400,6 +2401,8 @@ def engine_backend_name(engine: Any) -> str:
         return "jevk5"
     if isinstance(engine, KevBackend):
         return "kev"
+    if isinstance(engine, ClefBackend):
+        return "clef"
     if isinstance(engine, RerankBackend):
         return "rerank"
     if SystemOne is not None and isinstance(engine, SystemOne):
@@ -2414,7 +2417,7 @@ def create_engine(name: str | None = None) -> Any:
 
     Args:
         name: "auto" (default) | "local" | "sglang" | "jevk5" | "onnx" |
-            "jev" | "kev". Unset -> the SYSTEMONE_ENGINE env var,
+            "jev" | "kev" | "clef". Unset -> the SYSTEMONE_ENGINE env var,
             defaulting to "auto".
 
     - auto: JEV when JEV_URL is set and healthy, else SGLang when
@@ -2440,6 +2443,11 @@ def create_engine(name: str | None = None) -> Any:
     - kev: KevBackend (kev.serve's /v1/systemone: Kev-0.8B/4B/9B/27B).
       Same fail-open behavior as sglang. Text-only, but the long-doc
       specialist (up to 65,536 tokens on Kev-27B).
+    - clef: ClefBackend (Cloudflare clef/clef-flash weights, run locally).
+      Multimodal (text, JSON, images, video) with joint schema scoring.
+      Needs torch/transformers/huggingface_hub/safetensors/pillow (pip
+      install 'systemone[clef]'). Never auto-selected (it downloads
+      9-27B weights); failing open to local when unavailable.
 
     Raises:
         ValueError: unknown engine name.
@@ -2515,6 +2523,15 @@ def create_engine(name: str | None = None) -> Any:
                 return _local()
             raise
         return RerankBackend(enc.score, model_name=enc.model_id + " [onnx]")
+    if sel == "clef":
+        try:
+            return ClefBackend()
+        except Exception as exc:
+            if SystemOne is not None:
+                logging.warning(
+                    "clef weights unavailable (%s); failing open to local", exc)
+                return _local()
+            raise
     if sel == "jev" or (os.environ.get("JEV_URL") or "").strip():
         found = _remote("jev", JevDecideBackend, JevError, "JEV_URL")
         if found is not None:
@@ -2555,8 +2572,8 @@ def serve(
         engine: explicit engine instance (wins over engine_name; tests use
             this to inject stubs).
         engine_name: "auto" | "local" | "sglang" | "jevk5" | "onnx" |
-            "jev" | "kev" (see create_engine); unset -> $SYSTEMONE_ENGINE,
-            default "auto".
+            "jev" | "kev" | "clef" (see create_engine); unset ->
+            $SYSTEMONE_ENGINE, default "auto".
     """
     engine = engine or create_engine(engine_name)
     server = ThreadingHTTPServer(("127.0.0.1", port), ShimHandler)
