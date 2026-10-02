@@ -28,9 +28,9 @@ import {
 } from "@zcode/core";
 
 const USAGE = `Usage:
-  zcode decide --type choice --state <text> --instructions <text> --criteria <label>=<description> [--criteria ...] [--gold <label>] [--json]
-  zcode decide --type noul   --state <text> --instructions <text> [--gold yes|no] [--json]
-  zcode decide --type score  --state <text> --instructions <text> --criteria 0=<desc> --criteria 1=<desc> ... [--gold <n>] [--json]
+  zcode-local decide --type choice --state <text> --instructions <text> --criteria <label>=<description> [--criteria ...] [--gold <label>] [--json]
+  zcode-local decide --type noul   --state <text> --instructions <text> [--gold yes|no] [--json]
+  zcode-local decide --type score  --state <text> --instructions <text> --criteria 0=<desc> --criteria 1=<desc> ... [--gold <n>] [--json]
 
 Ask the SystemOne decision engine a typed question:
 
@@ -49,11 +49,11 @@ Options:
   -h, --help              show this help
 
 Examples:
-  zcode decide --type choice --state "Pick tonight's deploy slot" \\
+  zcode-local decide --type choice --state "Pick tonight's deploy slot" \\
     --instructions "Prefer the slot with the least user impact" \\
     --criteria a="Deploy at 2am, low traffic" --criteria b="Deploy at 6pm, high traffic"
-  zcode decide --type noul --state "Is the API healthy?" --instructions "Answer from the probe results"
-  zcode decide --type score --state "Rate this plan" --instructions "0=unusable, 4=perfect" \\
+  zcode-local decide --type noul --state "Is the API healthy?" --instructions "Answer from the probe results"
+  zcode-local decide --type score --state "Rate this plan" --instructions "0=unusable, 4=perfect" \\
     --criteria 0="unusable" --criteria 1="poor" --criteria 2="ok" --criteria 3="good" --criteria 4="perfect" --json
 
 Decision records are appended to ~/.config/zcode/systemone-decision-records.jsonl

@@ -11,11 +11,11 @@ import type { RunContext } from "@zcode/shared-types";
 import type { RunDependencies } from "./cli-types.js";
 
 const USAGE = `Usage:
-  zcode hooks trust status [--workspace <path-or-identity>] [--json]
-  zcode hooks trust review [--workspace <path-or-identity>] [--json]
-  zcode hooks trust grant --workspace <path-or-identity> --hook-digest <sha256> [--hook-digest <sha256> ...]
-  zcode hooks trust grant --workspace <path-or-identity> --all-current --bundle-digest <sha256>
-  zcode hooks trust revoke --workspace <path-or-identity> [--hook-digest <sha256> ... | --all]
+  zcode-local hooks trust status [--workspace <path-or-identity>] [--json]
+  zcode-local hooks trust review [--workspace <path-or-identity>] [--json]
+  zcode-local hooks trust grant --workspace <path-or-identity> --hook-digest <sha256> [--hook-digest <sha256> ...]
+  zcode-local hooks trust grant --workspace <path-or-identity> --all-current --bundle-digest <sha256>
+  zcode-local hooks trust revoke --workspace <path-or-identity> [--hook-digest <sha256> ... | --all]
 `;
 
 type Inspect = typeof inspectWorkspaceHookTrust;

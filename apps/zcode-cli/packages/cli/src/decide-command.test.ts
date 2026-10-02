@@ -43,7 +43,7 @@ test("decide --help prints usage and exits 0", async () => {
   const { ctx, out } = makeCtx(["decide", "--help"]);
   const code = await runDecideCommand(ctx);
   assert.equal(code, 0);
-  assert.match(out.join(""), /zcode decide --type choice/);
+  assert.match(out.join(""), /zcode-local decide --type choice/);
   assert.match(out.join(""), /--gold/);
 });
 
