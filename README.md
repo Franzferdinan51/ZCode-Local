@@ -100,8 +100,12 @@ works"). Each call returns a scored decision in ~100 ms: per-tier
 probabilities, top-1/top-2 margins, and an uncertainty flag; the scores are
 calibrated, then drive tier, effort, expected-utility model ranking,
 tool/MCP relevance ranking, and plan ranking. It is advisory-only and
-fail-open, and lives in the Python shim (`python -m systemone.shim`,
-`http://127.0.0.1:8765`). Details: https://github.com/Franzferdinan51/SystemOne.
+fail-open, and lives in the Python shim (`systemone serve --port 8765`,
+or `python -m systemone.shim`, at `http://127.0.0.1:8765`, overridable
+with `SYSTEMONE_SHIM_URL`). The shim serves route, rank-plans, and typed
+decide endpoints (`/v1/systemone/{route,rank-plans,decide}` plus the Jev
+`/v1/systemone`) on engines `auto|local|sglang|jevk5|onnx|jev`
+(`SYSTEMONE_ENGINE`). Details: https://github.com/Franzferdinan51/SystemOne.
 
 Decider-backed plan ranking: `plan-execute` asks the shim for N
 candidate plans and posts them to `/v1/systemone/rank-plans`, executing the
@@ -234,16 +238,19 @@ automatically (explicit env vars still win): `ZCODE_SYSTEMONE=0` /
   Mac mini (M4 Pro, 24 GB) reaching them over LM Link.
 - **SystemOne agent-flow routing (on by default)** — ZCode queries the
   router at `http://127.0.0.1:8765` (bundled under the release's
-  `systemone/` directory: `pip install -r systemone/requirements.txt`,
-  the GLiClass checkpoint downloads on first start; needs
-  Python >= 3.10). ZCode does **not** auto-start the shim — grok-local
-  does, or start it manually
-  (`python3.11 -m systemone.shim --port 8765`). Routing is advisory and
-  fail-open. The shim base URL defaults to `http://127.0.0.1:8765` and is
-  overridable with `SYSTEMONE_SHIM_URL`. Kill switches:
-  `ZCODE_SYSTEMONE=0` (routing off), `ZCODE_SPEEDSTACK_PRUNE=0`
-  (no MCP pruning), `ZCODE_SYSTEMONE_DECIDE=0` (decide engine off),
-  `SYSTEMONE_JEFF1=0` (GLiClass only, no Jeff-1 second head).
+  `systemone/` directory, systemone 0.1.0: `pip install -r
+  systemone/requirements.txt` — `numpy>=1.24` slim base plus the
+  torch/GLiClass `local` extra; the GLiClass checkpoint downloads on
+  first start; needs Python >= 3.10). ZCode auto-starts the bundled shim
+  when nothing answers locally (`systemone serve --port 8765 --engine
+  auto`, falling back to `python3 -m systemone.shim`); or start it
+  manually with the same command. Routing is advisory and fail-open.
+  The shim base URL defaults to `http://127.0.0.1:8765` and is
+  overridable with `SYSTEMONE_SHIM_URL` (remote URLs are probed, never
+  auto-started). Kill switches: `ZCODE_SYSTEMONE=0` (routing off),
+  `ZCODE_SPEEDSTACK_PRUNE=0` (no MCP pruning),
+  `ZCODE_SYSTEMONE_DECIDE=0` (decide engine off), `SYSTEMONE_JEFF1=0`
+  (GLiClass only, no Jeff-1 second head).
 
 ## Development and Usage
 

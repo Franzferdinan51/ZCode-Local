@@ -343,6 +343,9 @@ importers:
       '@zcode/i18n':
         specifier: workspace:*
         version: link:../i18n
+      '@zcode/provider':
+        specifier: workspace:*
+        version: link:../../../../packages/provider
       '@zcode/provider-node':
         specifier: workspace:*
         version: link:../../../../packages/provider-node

@@ -1,0 +1,555 @@
+{
+ "openapi": "3.0.3",
+ "info": {
+  "title": "SystemOne shim",
+  "version": "0.1.0",
+  "description": "Local typed-decision server: Jev-shaped choice/score/noul judgments over a GLiClass or SGLang engine. TypeSafe dialect (POST /v1/systemone), SGLang dialect (POST /v1/decisions), tier routing, plan ranking, and single decisions."
+ },
+ "servers": [
+  {
+   "url": "http://127.0.0.1:8765"
+  }
+ ],
+ "paths": {
+  "/healthz": {
+   "get": {
+    "summary": "Shim liveness plus the serving engine",
+    "responses": {
+     "200": {
+      "description": "Liveness + engine identity",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "ok",
+          "model",
+          "backend"
+         ],
+         "properties": {
+          "ok": {
+           "type": "boolean"
+          },
+          "model": {
+           "type": "string"
+          },
+          "backend": {
+           "type": "string",
+           "enum": [
+            "local",
+            "sglang",
+            "hybrid",
+            "jev",
+            "jevk5",
+            "rerank",
+            "custom"
+           ]
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/metrics": {
+   "get": {
+    "summary": "Prometheus request counters and latency sums",
+    "responses": {
+     "200": {
+      "description": "Prometheus text exposition"
+     }
+    }
+   }
+  },
+  "/": {
+   "get": {
+    "summary": "Alias of /healthz",
+    "responses": {
+     "200": {
+      "description": "Liveness + engine identity",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/openapi.json": {
+   "get": {
+    "summary": "This OpenAPI document",
+    "responses": {
+     "200": {
+      "description": "The spec",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/systemone": {
+   "post": {
+    "summary": "Batched typed questions, TypeSafe dialect",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "state",
+         "questions"
+        ],
+        "properties": {
+         "model": {
+          "type": "string"
+         },
+         "state": {
+          "description": "Plain text or a rich object/array (flattened to text, capped at 6000 chars)"
+         },
+         "questions": {
+          "description": "{id: {type, instructions, criteria}} or a list of question mappings carrying id",
+          "oneOf": [
+           {
+            "type": "object"
+           },
+           {
+            "type": "array"
+           }
+          ]
+         },
+         "images": {
+          "type": "array",
+          "description": "Clef media: image URLs / data URLs, {'image'|'url': ...} mappings, or frame arrays"
+         },
+         "videos": {
+          "type": "array",
+          "description": "Clef media: video URLs / data URLs, {'image'|'url': ...} mappings, or frame arrays"
+         },
+         "media_kwargs": {
+          "type": "object",
+          "description": "Optional processor kwargs (validated mapping; consumed by processor-backed engines)"
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Per-id answers",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "answers"
+         ],
+         "properties": {
+          "answers": {
+           "type": "object"
+          },
+          "model": {
+           "type": "string"
+          },
+          "latency_ms": {
+           "type": "number"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Malformed request"
+     },
+     "500": {
+      "description": "Engine failure (sanitized)"
+     }
+    }
+   }
+  },
+  "/v1/decisions": {
+   "post": {
+    "summary": "Batched typed questions, SGLang /v1/decisions dialect",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "input",
+         "questions"
+        ],
+        "properties": {
+         "model": {
+          "type": "string"
+         },
+         "input": {
+          "description": "State text, or OpenAI-style content parts (image parts are noted and skipped by the local engine)"
+         },
+         "questions": {
+          "type": "array",
+          "items": {
+           "type": "object",
+           "required": [
+            "id",
+            "type",
+            "question"
+           ],
+           "properties": {
+            "id": {
+             "type": "string"
+            },
+            "type": {
+             "type": "string",
+             "enum": [
+              "choice",
+              "score",
+              "yes_no"
+             ]
+            },
+            "question": {
+             "type": "string"
+            },
+            "options": {
+             "type": "array",
+             "description": "choice: 2-26 items",
+             "items": {
+              "type": "object"
+             }
+            },
+            "levels": {
+             "type": "array",
+             "description": "score: 2-10 items",
+             "items": {
+              "type": "object"
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Per-id answers (label_mass is null on the local engine)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "answers"
+         ],
+         "properties": {
+          "answers": {
+           "type": "object"
+          },
+          "model": {
+           "type": "string"
+          },
+          "usage": {
+           "type": "object"
+          },
+          "latency_ms": {
+           "type": "number"
+          }
+         }
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Well-formed JSON violating endpoint limits"
+     },
+     "500": {
+      "description": "Engine failure (sanitized)"
+     }
+    }
+   }
+  },
+  "/v1/decide": {
+   "post": {
+    "summary": "One System 1 decision, JEV /v1/decide dialect",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "kind",
+         "state",
+         "question"
+        ],
+        "properties": {
+         "kind": {
+          "type": "string",
+          "enum": [
+           "noul",
+           "choice",
+           "score"
+          ]
+         },
+         "state": {
+          "description": "Decision state: string, JSON object, or list mixing text with images"
+         },
+         "question": {
+          "type": "string"
+         },
+         "options": {
+          "type": "array",
+          "description": "choice: 2-256 items (engine limits apply)",
+          "items": {
+           "type": "string"
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "JEV decision: options, probabilities, choice, choice_index, model, usage"
+     },
+     "422": {
+      "description": "Invalid body or over the engine option limit"
+     }
+    }
+   }
+  },
+  "/v1/decide/info": {
+   "get": {
+    "summary": "JEV /v1/decide capabilities: option limit, kinds, image support",
+    "responses": {
+     "200": {
+      "description": "Decide capability report"
+     }
+    }
+   }
+  },
+  "/v1/systemone/route": {
+   "post": {
+    "summary": "Route a task to the cheapest sufficient tier",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "task"
+        ],
+        "properties": {
+         "task": {
+          "type": "string"
+         },
+         "cost_bias": {
+          "type": "string",
+          "enum": [
+           "economy",
+           "balanced",
+           "quality"
+          ],
+          "default": "balanced"
+         },
+         "tiers": {
+          "type": "array",
+          "items": {
+           "type": "string"
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Route payload (tier, confidence, margin, model_id, effort, rationale)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "route"
+         ],
+         "properties": {
+          "route": {
+           "type": "object"
+          },
+          "model": {
+           "type": "string"
+          },
+          "latency_ms": {
+           "type": "number"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Malformed request"
+     },
+     "503": {
+      "description": "Routing disabled (SYSTEMONE_DISABLE=1)"
+     }
+    }
+   }
+  },
+  "/v1/systemone/rank-plans": {
+   "post": {
+    "summary": "Order plans by P(success | task)",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "task",
+         "plans"
+        ],
+        "properties": {
+         "task": {
+          "type": "string"
+         },
+         "plans": {
+          "type": "array",
+          "items": {
+           "type": "object"
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Ranked plans",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "ranking"
+         ],
+         "properties": {
+          "ranking": {
+           "type": "array",
+           "items": {
+            "type": "object"
+           }
+          },
+          "latency_ms": {
+           "type": "number"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Malformed request"
+     },
+     "503": {
+      "description": "Routing disabled (SYSTEMONE_DISABLE=1)"
+     }
+    }
+   }
+  },
+  "/v1/systemone/decide": {
+   "post": {
+    "summary": "One typed decision via the sidecar (fail-open local fallback)",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "state",
+         "instructions",
+         "type"
+        ],
+        "properties": {
+         "state": {},
+         "instructions": {
+          "type": "string"
+         },
+         "type": {
+          "type": "string",
+          "enum": [
+           "choice",
+           "noul",
+           "score"
+          ]
+         },
+         "criteria": {
+          "description": "choice: {label: description}; noul: {yes, no} or {true, false} (optional); score: ordered level list"
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Decision payload",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "type",
+          "backend"
+         ],
+         "properties": {
+          "type": {
+           "type": "string"
+          },
+          "backend": {
+           "type": "string"
+          },
+          "confidence": {
+           "type": "number"
+          },
+          "latency_ms": {
+           "type": "number"
+          },
+          "model": {
+           "type": "string"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Malformed request"
+     },
+     "500": {
+      "description": "Engine failure (sanitized)"
+     }
+    }
+   }
+  }
+ }
+}

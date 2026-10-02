@@ -24,20 +24,29 @@ from transformers import AutoTokenizer
 from gliclass import GLiClassModel
 from gliclass.pipeline import ZeroShotClassificationPipeline
 
-from .calibration import TemperatureCalibrator, softmax
-
-# Smallest-first candidates; the first that loads wins.
-MODEL_CANDIDATES = [
-    "knowledgator/gliclass-edge-v3.0",
-    "knowledgator/gliclass-small-v1.0",
-    "knowledgator/gliclass-base-v1.0",
-]
-
-# States larger than this are capped before inference (same bound Loki uses
-# for the routing task). The encoder truncates to 512 tokens anyway, so the
-# cap only bounds memory/log noise — it does not change judgments.
-MAX_STATE_CHARS = 6000
-
+from .calibration import (
+    PerTypeTemperatureCalibrator,
+    TemperatureCalibrator,
+    softmax,
+)
+from .patterns import (
+    ABSTAIN_LABEL,
+    MAX_STATE_CHARS,
+    MODEL_CANDIDATES,
+    LatencyStats,
+    StallGuard,
+    SystemOneError,
+    _resolve_candidates,
+    build_decision_prompts,
+    choice_confidence,
+    make_questions,
+    noul_confidence,
+    resolve_revision,
+    score_confidence,
+    validate_choice,
+    validate_distribution,
+    with_abstain,
+)
 
 def default_device() -> str:
     """Best torch device for this machine: CUDA > Apple MPS > CPU.
@@ -55,20 +64,6 @@ def default_device() -> str:
     return "cpu"
 
 
-class SystemOneError(RuntimeError):
-    """Sanitized engine failure.
-
-    Mirrors Loki's TypeSafeRequestError philosophy: the message is safe to
-    surface to callers and logs. It never echoes environment-provided
-    secrets, absolute paths, or transport internals — only what went wrong
-    and what to do about it.
-    """
-
-    def __init__(self, message: str, *, hint: str = "") -> None:
-        self.hint = hint
-        super().__init__(f"{message} {hint}".strip() if hint else message)
-
-
 def _sanitize_detail(err: Exception) -> str:
     """One-line, path/secret-free summary of an unexpected exception."""
     text = f"{type(err).__name__}: {err}".splitlines()[0]
@@ -76,143 +71,22 @@ def _sanitize_detail(err: Exception) -> str:
     return text[:300]
 
 
-# ---------------------------------------------------------------------------
-# Decision patterns ported from Ryan's jev-ultrafast / mobile-jev agent repos.
-# Both are TypeSafe-hosted agent apps; what transfers is not their transport
-# but their battle-tested decision-engineering discipline.
-# ---------------------------------------------------------------------------
-
-import math
-
-
-def validate_distribution(
-    prob_map: Dict[str, float], ids: Sequence[str], best: str, tol: float = 0.02
-) -> Dict[str, float]:
-    """Response-contract check on a probability distribution.
-
-    Port of jev-ultrafast's ``validate_choice`` (model.py): asserts the best
-    label is one of the ids, the probability keys exactly match the ids, every
-    value is finite in [0, 1], the values sum to ~1, and the best label actually
-    holds the max probability. Raises SystemOneError on any violation —
-    catches degenerate or malformed model outputs before they become decisions.
-    """
-    try:
-        numbers = list(prob_map.values())
-        valid = (
-            best in ids
-            and set(prob_map) == set(ids)
-            and all(
-                isinstance(n, (int, float)) and math.isfinite(n) and 0 <= n <= 1
-                for n in numbers
-            )
-            and abs(sum(numbers) - 1.0) < tol
-            and prob_map[best] >= max(numbers) - 1e-6
-        )
-    except (KeyError, TypeError, ValueError):
-        valid = False
-    if not valid:
-        raise SystemOneError(
-            "model returned an invalid decision distribution",
-            hint="keys must match the question options, values must be "
-            "finite probabilities summing to ~1, and the chosen label must "
-            "hold the max probability",
-        )
-    return prob_map
-
-
-def validate_choice(answer: Dict[str, Any], ids: Sequence[str], tol: float = 0.02) -> Dict[str, Any]:
-    """Validate a Jev-shaped choice answer: {choice, probabilities, confidence}.
-
-    Thin wrapper over validate_distribution matching jev-ultrafast's shape.
-    """
-    try:
-        probs = answer["probabilities"]
-        choice = answer["choice"]
-    except (KeyError, TypeError):
-        raise SystemOneError("model returned a malformed choice answer") from None
-    validate_distribution(probs, ids, choice, tol=tol)
-    return answer
-
-
-ABSTAIN_LABEL = "none"
-
-
-def with_abstain(options: Sequence[str], label: str = ABSTAIN_LABEL) -> List[str]:
-    """Append an explicit abstain option to a choice question.
-
-    Port of mobile-jev's NONE pattern (policy.mjs): never force the model to
-    pick when nothing fits — "If the desired value is missing, select NONE."
-    """
-    opts = list(options)
-    if label not in opts:
-        opts.append(label)
-    return opts
-
-
-class StallGuard:
-    """Fail-fast loop/stall detector for decision-driven agents.
-
-    Port of jev-ultrafast's executor discipline (agent.py): consecutive
-    no-progress observations trip a stall instead of letting an agent spin
-    forever. Call observe() after each executed decision.
-    """
-
-    def __init__(self, max_stalls: int = 3) -> None:
-        self.max_stalls = max_stalls
-        self.stalls = 0
-
-    def observe(self, progressed: bool) -> str:
-        """Record whether the last decision made progress.
-
-        Returns "ok", or "stalled" once max_stalls consecutive no-progress
-        observations accumulate.
-        """
-        self.stalls = 0 if progressed else self.stalls + 1
-        return "stalled" if self.stalls >= self.max_stalls else "ok"
-
-    def reset(self) -> None:
-        self.stalls = 0
-
-
-class LatencyStats:
-    """Tiny p50/p95 latency aggregator for bench and calibration runs.
-
-    Port of mobile-jev's metrics.mjs stats(): SystemOne already reports
-    per-call latency_ms in _meta; this aggregates them across runs.
-    """
-
-    def __init__(self) -> None:
-        self.values: List[float] = []
-
-    def add(self, ms: float) -> None:
-        if isinstance(ms, (int, float)) and math.isfinite(ms):
-            self.values.append(float(ms))
-
-    def summary(self) -> Dict[str, Any]:
-        vals = sorted(self.values)
-        n = len(vals)
-        if not n:
-            return {"count": 0, "median_ms": None, "p95_ms": None, "mean_ms": None}
-        mid = n // 2
-        median = vals[mid] if n % 2 else (vals[mid - 1] + vals[mid]) / 2
-        return {
-            "count": n,
-            "median_ms": round(median, 1),
-            "p95_ms": round(vals[math.ceil(n * 0.95) - 1], 1),
-            "mean_ms": round(sum(vals) / n, 1),
-        }
-
-
 class SystemOne:
     """Local System One decision engine.
 
     Args:
-        model_name: HF id of the GLiClass checkpoint. If None, tries
-            MODEL_CANDIDATES smallest-first.
+        model_name: HF id of the GLiClass checkpoint. If None, the
+            SYSTEMONE_MODEL env var is honored, else MODEL_CANDIDATES
+            smallest-first.
         device: "cuda", "mps", "cpu", or None / "auto" (auto-detect:
             CUDA if available, else Apple MPS, else CPU).
         temperature: softmax temperature for output probabilities (1.0 = raw).
-        calibrator: optional fitted TemperatureCalibrator; overrides temperature.
+        calibrator: optional fitted TemperatureCalibrator or
+            PerTypeTemperatureCalibrator (per-answer-type temperature map,
+            adapted from Mapika/decider); overrides temperature.
+        revision: HF revision pin for model/tokenizer downloads. If None,
+            the SYSTEMONE_REVISION env var is honored; unset -> default
+            branch (unpinned).
     """
 
     def __init__(
@@ -221,6 +95,7 @@ class SystemOne:
         device: str | None = None,
         temperature: float = 1.0,
         calibrator: TemperatureCalibrator | None = None,
+        revision: str | None = None,
     ) -> None:
         if device is None or (
             isinstance(device, str) and device.strip().lower() == "auto"
@@ -230,12 +105,16 @@ class SystemOne:
             device = default_device()
         self.device = device
 
-        candidates = [model_name] if model_name else MODEL_CANDIDATES
+        candidates = _resolve_candidates(model_name)
+        self.revision = resolve_revision(revision)
+        rev_kwargs = {"revision": self.revision} if self.revision else {}
         last_err: Exception | None = None
         for cand in candidates:
             try:
-                self.model = GLiClassModel.from_pretrained(cand)
-                self.tokenizer = AutoTokenizer.from_pretrained(cand)
+                self.model = GLiClassModel.from_pretrained(cand, **rev_kwargs)
+                # Pinned via rev_kwargs when SYSTEMONE_REVISION is set; the
+                # scanner cannot see through **kwargs (B615 false positive).
+                self.tokenizer = AutoTokenizer.from_pretrained(cand, **rev_kwargs)  # nosec B615
                 self.model_name = cand
                 last_err = None
                 break
@@ -255,13 +134,25 @@ class SystemOne:
         self.calibrator = calibrator
 
     # -- calibration ----------------------------------------------------
-    def set_calibrator(self, calibrator: TemperatureCalibrator) -> None:
-        """Attach a fitted TemperatureCalibrator (overrides temperature)."""
+    def set_calibrator(
+        self, calibrator: TemperatureCalibrator | PerTypeTemperatureCalibrator
+    ) -> None:
+        """Attach a fitted calibrator (overrides temperature).
+
+        A PerTypeTemperatureCalibrator applies the question's own temperature
+        (decider's >=1.4.0 semantics); a plain TemperatureCalibrator applies
+        one pooled temperature to every question type.
+        """
         self.calibrator = calibrator
 
-    def _probs(self, scores: np.ndarray) -> np.ndarray:
-        if self.calibrator is not None and getattr(self.calibrator, "fitted_", False):
-            return np.asarray(self.calibrator.predict_proba([scores])[0])
+    def _probs(self, scores: np.ndarray, qtype: str = "choice") -> np.ndarray:
+        cal = self.calibrator
+        if cal is not None and getattr(cal, "fitted_", False):
+            if hasattr(cal, "temperature_for"):
+                # per-answer-type map: the fitted temperature for THIS
+                # question type is actually applied (decider >=1.4.0).
+                return np.asarray(cal.predict_proba(scores, qtype))
+            return np.asarray(cal.predict_proba([scores])[0])
         T = self.temperature if self.temperature > 0 else 1.0
         return softmax(np.asarray(scores, dtype=np.float64) / T)
 
@@ -272,14 +163,20 @@ class SystemOne:
         label_lists: List[List[str]],
         prompts: List[str | None] | None = None,
         batch_size: int = 32,
+        classification_type: str = "single_label",
     ) -> List[Dict[str, float]]:
-        """One pipeline call; returns per-text {label: raw_score} dicts."""
+        """One pipeline call; returns per-text {label: raw_score} dicts.
+
+        classification_type="single_label" is winner-take-all (one nonzero
+        entry per text) — right for tier routing. "multi_label" scores every
+        label independently — right for tool/MCP relevance ranking.
+        """
         results = self.pipeline(
             texts,
             label_lists,
             threshold=0.0,
             batch_size=batch_size,
-            classification_type="single_label",
+            classification_type=classification_type,
             prompt=prompts,
         )
         out: List[Dict[str, float]] = []
@@ -295,6 +192,11 @@ class SystemOne:
         state: str,
         questions: Sequence[Dict[str, Any]],
         batch_size: int = 32,
+        build_prompts: bool = True,
+        shuffle_options: bool = False,
+        prompt_seed: int | None = None,
+        images: Sequence[Any] | None = None,
+        videos: Sequence[Any] | None = None,
     ) -> Dict[str, Any]:
         """Answer multiple typed questions about `state` in one batched pass.
 
@@ -302,6 +204,17 @@ class SystemOne:
           choice: {"options": [str, ...], "prompt": optional str}
           score:  {"levels": [str, ...],  "prompt": optional str}  (ordered)
           noul:   {"statement": str}  (yes/no question about the state)
+
+        When build_prompts is True (default), every question gets a
+        state-first prompt row (see build_decision_prompts). shuffle_options
+        shuffles choice options in the row (seeded by prompt_seed); score
+        levels keep their order and the abstain label stays last. Pass
+        build_prompts=False for the legacy behavior (explicit prompt or None
+        straight to the pipeline).
+
+        Confidence follows the TypeSafe definitions (adapted from
+        Mapika/decider): choice (n*p_max-1)/(n-1), score
+        max(0, 1 - sum_i p_i*|i-k|/(n-1)), noul max(P(yes), P(no)).
 
         Returns {name: answer_dict, ..., "_meta": {...}}.
         """
@@ -314,24 +227,32 @@ class SystemOne:
             state = state[:MAX_STATE_CHARS]
             state_capped = True
 
-        label_lists: List[List[str]] = []
-        prompts: List[str | None] = []
-        for q in questions:
-            qtype = q["type"]
-            if qtype == "choice":
-                label_lists.append(list(q["options"]))
-                prompts.append(q.get("prompt"))
-            elif qtype == "score":
-                label_lists.append(list(q["levels"]))
-                prompts.append(q.get("prompt"))
-            elif qtype == "noul":
-                label_lists.append(["yes", "no"])
-                prompts.append(q.get("statement") or q.get("prompt"))
-            else:
-                raise SystemOneError(
-                    f"unknown question type: {qtype!r}",
-                    hint="expected one of: choice, score, noul",
-                )
+        if build_prompts:
+            prompts, label_lists = build_decision_prompts(
+                state,
+                questions,
+                shuffle_options=shuffle_options,
+                seed=prompt_seed,
+            )
+        else:
+            label_lists = []
+            prompts = []
+            for q in questions:
+                qtype = q["type"]
+                if qtype == "choice":
+                    label_lists.append(list(q["options"]))
+                    prompts.append(q.get("prompt"))
+                elif qtype == "score":
+                    label_lists.append(list(q["levels"]))
+                    prompts.append(q.get("prompt"))
+                elif qtype == "noul":
+                    label_lists.append(["yes", "no"])
+                    prompts.append(q.get("statement") or q.get("prompt"))
+                else:
+                    raise SystemOneError(
+                        f"unknown question type: {qtype!r}",
+                        hint="expected one of: choice, score, noul",
+                    )
 
         t0 = time.perf_counter()
         score_dicts = self.raw_scores(
@@ -343,10 +264,9 @@ class SystemOne:
         answers: Dict[str, Any] = {}
         for q, labs, sdict in zip(questions, label_lists, score_dicts):
             scores = np.array([sdict[lab] for lab in labs], dtype=np.float64)
-            probs = self._probs(scores)
-            prob_map = {lab: float(p) for lab, p in zip(labs, probs)}
-            conf = float(probs.max())
             qtype = q["type"]
+            probs = self._probs(scores, qtype=qtype)
+            prob_map = {lab: float(p) for lab, p in zip(labs, probs)}
             if qtype == "choice":
                 best = labs[int(probs.argmax())]
                 validate_distribution(prob_map, labs, best)
@@ -354,7 +274,7 @@ class SystemOne:
                     "type": "choice",
                     "choice": best,
                     "probabilities": prob_map,
-                    "confidence": conf,
+                    "confidence": choice_confidence(probs),
                 }
             elif qtype == "score":
                 best = labs[int(probs.argmax())]
@@ -363,7 +283,8 @@ class SystemOne:
                     "type": "score",
                     "level": best,
                     "distribution": prob_map,
-                    "confidence": conf,
+                    "confidence": score_confidence(probs),
+                    "legend": dict(q.get("legend") or {}),
                 }
             else:  # noul
                 p_yes = prob_map["yes"]
@@ -373,7 +294,7 @@ class SystemOne:
                     "type": "noul",
                     "probability": p_yes,
                     "answer": bool(p_yes >= 0.5),
-                    "confidence": float(max(p_yes, 1.0 - p_yes)),
+                    "confidence": noul_confidence(p_yes),
                 }
 
         answers["_meta"] = {
@@ -384,6 +305,12 @@ class SystemOne:
             "state_chars": len(state),
             "state_capped": state_capped,
         }
+        if images or videos:
+            # Text-only GLiClass engine: media is noted and skipped.
+            answers["_meta"]["media_dropped"] = {
+                "images": len(list(images or [])),
+                "videos": len(list(videos or [])),
+            }
         return answers
 
     def speculative_decide(
@@ -450,17 +377,4 @@ class SystemOne:
         }
 
 
-def make_questions(
-    choices: Dict[str, List[str]] | None = None,
-    scores: Dict[str, List[str]] | None = None,
-    nouls: Dict[str, str] | None = None,
-) -> List[Dict[str, Any]]:
-    """Convenience builder for question lists."""
-    qs: List[Dict[str, Any]] = []
-    for name, options in (choices or {}).items():
-        qs.append({"name": name, "type": "choice", "options": options})
-    for name, levels in (scores or {}).items():
-        qs.append({"name": name, "type": "score", "levels": levels})
-    for name, statement in (nouls or {}).items():
-        qs.append({"name": name, "type": "noul", "statement": statement})
-    return qs
+

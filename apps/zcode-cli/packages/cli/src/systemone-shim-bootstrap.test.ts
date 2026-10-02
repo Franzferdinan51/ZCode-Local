@@ -11,6 +11,11 @@ import { test } from "node:test";
 
 import {
   findSystemOneDir,
+  requiredShimImports,
+  resolveShimSpawnCommand,
+  resolveSystemOneHealthzUrl,
+  resolveSystemOneShimBase,
+  resolveSystemOneSpawnPort,
   shouldEnsureSystemOneShim,
 } from "./systemone-shim-bootstrap.js";
 
@@ -68,4 +73,68 @@ test("findSystemOneDir: release layout <root>/systemone next to the bundle", () 
 test("findSystemOneDir: returns undefined when nothing is bundled", () => {
   const dir = mkdtempSync(join(tmpdir(), "s1none-"));
   assert.equal(findSystemOneDir({ env: {}, fromDir: dir }), undefined);
+});
+
+test("resolveSystemOneShimBase honors $SYSTEMONE_SHIM_URL", () => {
+  assert.equal(resolveSystemOneShimBase({}), "http://127.0.0.1:8765");
+  assert.equal(
+    resolveSystemOneShimBase({ SYSTEMONE_SHIM_URL: "http://macmini:8765/" }),
+    "http://macmini:8765",
+  );
+  assert.equal(
+    resolveSystemOneHealthzUrl({ SYSTEMONE_SHIM_URL: "http://macmini:8765" }),
+    "http://macmini:8765/healthz",
+  );
+});
+
+test("resolveSystemOneSpawnPort takes the shim URL port, else 8765", () => {
+  assert.equal(resolveSystemOneSpawnPort({}), 8765);
+  assert.equal(
+    resolveSystemOneSpawnPort({ SYSTEMONE_SHIM_URL: "http://127.0.0.1:9999" }),
+    9999,
+  );
+  assert.equal(
+    resolveSystemOneSpawnPort({ SYSTEMONE_SHIM_URL: "not a url" }),
+    8765,
+  );
+});
+
+test("requiredShimImports: slim floor + local weights only when needed", () => {
+  assert.deepEqual(requiredShimImports({}), ["numpy", "gliclass"]);
+  assert.deepEqual(requiredShimImports({ SYSTEMONE_ENGINE: "local" }), [
+    "numpy",
+    "gliclass",
+  ]);
+  assert.deepEqual(requiredShimImports({ SYSTEMONE_ENGINE: "sglang" }), ["numpy"]);
+  assert.deepEqual(
+    requiredShimImports({
+      SYSTEMONE_ENGINE: "auto",
+      SGLANG_BASE_URL: "http://x:30000",
+    }),
+    ["numpy"],
+  );
+  assert.deepEqual(requiredShimImports({ SYSTEMONE_ENGINE: "onnx" }), [
+    "numpy",
+    "onnxruntime",
+  ]);
+});
+
+test("resolveShimSpawnCommand prefers `systemone serve`, falls back to -m", async () => {
+  const viaServe = await resolveShimSpawnCommand("/usr/bin/python3", 8765, {
+    resolveOnPathImpl: async () => "/usr/local/bin/systemone",
+  });
+  assert.equal(viaServe.viaServe, true);
+  assert.deepEqual(viaServe.args, ["serve", "--port", "8765"]);
+
+  const viaModule = await resolveShimSpawnCommand("/usr/bin/python3", 9999, {
+    resolveOnPathImpl: async () => undefined,
+  });
+  assert.equal(viaModule.viaServe, false);
+  assert.equal(viaModule.command, "/usr/bin/python3");
+  assert.deepEqual(viaModule.args.slice(0, 4), [
+    "-m",
+    "systemone.shim",
+    "--port",
+    "9999",
+  ]);
 });

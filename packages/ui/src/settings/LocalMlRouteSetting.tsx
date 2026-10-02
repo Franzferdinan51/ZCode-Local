@@ -25,7 +25,7 @@ const BACKEND_OPTIONS: Array<{ value: MlRouteBackendId; label: string; hint: str
   {
     value: "jeff-1",
     label: "Jeff-1 (local server)",
-    hint: "POSTs to your Jeff-1 jev_clf_server on 127.0.0.1:8079. 4B model, needs MPS/CUDA + ~8GB RAM.",
+    hint: "POSTs to your legacy Jeff-1 jev_clf_server on 127.0.0.1:8079. 4B model, needs MPS/CUDA + ~8GB RAM. (The modern :8079 decision sidecar is decide-only and never answers route-choice.)",
   },
   {
     value: "systemone",

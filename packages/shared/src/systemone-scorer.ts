@@ -29,9 +29,11 @@ export type MlRouteBackendId = "jeff-1" | "systemone" | "laya" | "custom";
 export interface MlRouteBackendConfig {
   readonly backend: MlRouteBackendId;
   /**
-   * POST endpoint answering the SystemOne shape. Defaults: Jeff-1
-   * `http://127.0.0.1:8079/v1/systemone`, SystemOne shim
-   * `http://127.0.0.1:8765/v1/systemone`. Loopback only.
+   * POST endpoint answering the SystemOne shape. Defaults: SystemOne
+   * shim `http://127.0.0.1:8765/v1/systemone` (primary), Jeff-1
+   * `http://127.0.0.1:8079/v1/systemone` (legacy `jev_clf_server`
+   * passthrough — the modern :8079 decision sidecar is decide-only
+   * and never answers route-choice). Loopback only.
    */
   readonly endpoint?: string;
   /** stdio bridge argv (NDJSON request line in, response line out). */
@@ -49,6 +51,17 @@ export const ML_ROUTE_DEFAULT_ENDPOINTS: Readonly<Record<string, string>> = {
   "jeff-1": "http://127.0.0.1:8079/v1/systemone",
   systemone: "http://127.0.0.1:8765/v1/systemone",
 };
+
+/**
+ * Decision backends the SystemOne shim's typed-decide endpoint reports:
+ * `decider` (the decision sidecar answered, e.g. Mapika/decider-4b) or
+ * `fallback` (the shim answered locally with its GLiClass engine).
+ * Observability only — callers fail open on any value.
+ */
+export const SYSTEMONE_DECIDE_BACKENDS = ["decider", "fallback"] as const;
+
+/** One of the known `SYSTEMONE_DECIDE_BACKENDS` values. */
+export type SystemOneDecideBackend = (typeof SYSTEMONE_DECIDE_BACKENDS)[number];
 
 export const ML_ROUTE_DEFAULT_TIMEOUT_MS = 20_000;
 
@@ -283,13 +296,7 @@ export interface MlRouteServiceResponse {
 /** Per-task reasoning effort tier a route backend may hint at. */
 export type SystemOneRouteEffort = "low" | "medium" | "high" | "xhigh" | "ultra";
 
-const SYSTEMONE_ROUTE_EFFORTS: readonly string[] = [
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "ultra",
-];
+const SYSTEMONE_ROUTE_EFFORTS: readonly string[] = ["low", "medium", "high", "xhigh", "ultra"];
 
 /**
  * Fail-open extraction of an optional `effort` hint from a SystemOne-style

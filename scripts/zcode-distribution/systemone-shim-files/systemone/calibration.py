@@ -18,8 +18,10 @@ before/after.
 
 from __future__ import annotations
 
+import datetime
+import json
 from dataclasses import dataclass
-from typing import Callable, List, Sequence
+from typing import Any, Callable, Dict, List, Sequence
 
 import numpy as np
 
@@ -120,6 +122,38 @@ class TemperatureCalibrator:
 
     def predict_proba(self, scores: Sequence[Sequence[float]]) -> np.ndarray:
         return softmax(np.asarray(scores, dtype=np.float64) / self.temperature_)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """JSON-serializable dict (the safe alternative to pickling)."""
+        return {
+            "kind": "temperature",
+            "temperature": self.temperature_,
+            "fitted": self.fitted_,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "TemperatureCalibrator":
+        """Load from a to_dict()-style dict; insane values fail open to T=1."""
+        obj = cls()
+        try:
+            T = float(d.get("temperature", 1.0))
+        except (TypeError, ValueError):
+            T = 1.0
+        obj.temperature_ = T if (np.isfinite(T) and T > 0) else 1.0
+        obj.fitted_ = bool(d.get("fitted", True))
+        return obj
+
+    def save(self, path: str) -> str:
+        """Write the to_dict() payload to a JSON file."""
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(self.to_dict(), f, indent=2)
+        return path
+
+    @classmethod
+    def load(cls, path: str) -> "TemperatureCalibrator":
+        """Load a calibrator previously written by save()."""
+        with open(path, "r", encoding="utf-8") as f:
+            return cls.from_dict(json.load(f))
 
 
 class PlattCalibrator:
@@ -241,3 +275,260 @@ class CalibratedScorer:
             if rest:
                 out[i, rest] = (1.0 - p_top1[i]) / len(rest)
         return out
+
+# ---------------------------------------------------------------------------
+# Per-answer-type temperature calibration for the decision path.
+#
+# Adapted from Mapika/decider (Apache-2.0): decider/calibrate.py and
+# decider/temperature.py. Decider fits one temperature per answer type
+# {choice, noul, score} by NLL minimization (grid search + golden-section
+# refinement) on T=1 logits; answer types with fewer than MIN_ROWS_PER_TYPE
+# logged rows fall back to the pooled (all-types) temperature. The fitted map
+# is APPLIED per type at decision time (>=1.4.0 semantics): SystemOne._probs
+# looks up the question's own temperature instead of silently serving the
+# pooled one.
+# ---------------------------------------------------------------------------
+
+DECISION_TYPES = ("choice", "noul", "score")
+"""Answer types that get their own temperature entry."""
+
+MIN_ROWS_PER_TYPE = 50
+"""Decider's fallback threshold: types with fewer rows use the pooled T."""
+
+DecisionRecord = Dict[str, Any]
+"""Logged decision row: {"type": "choice"|"noul"|"score", "gold": int,
+"logits": [...]} or {"type": ..., "gold": int, "probs": [...]}. For "probs"
+rows the values are treated as the T=1 simplex (the relative temperature is
+fit on their log-probs), which matches battery/fit.py's temper() math."""
+
+
+def _fit_temperature_nll(rows: Sequence[tuple[np.ndarray, int]]) -> float:
+    """Fit one temperature by NLL via golden-section search on logT.
+
+    Pure numpy (same approach as battery/fit.py) so the decision-calibration
+    path needs no scipy. Rows may have different class counts — they are
+    grouped by width and each group is vectorized. Searches logT in
+    [-4, 4]; returns T.
+    """
+    groups: Dict[int, List[tuple[np.ndarray, int]]] = {}
+    for P, gold in rows:
+        groups.setdefault(int(len(P)), []).append((P, gold))
+
+    def nll(logT: float) -> float:
+        T = float(np.exp(logT))
+        total, n = 0.0, 0
+        for members in groups.values():
+            Pm = np.stack([m[0] for m in members])
+            ym = np.asarray([m[1] for m in members], dtype=int)
+            z = np.log(np.clip(Pm, 1e-12, 1.0)) / T
+            z = z - z.max(axis=1, keepdims=True)
+            e = np.exp(z)
+            Q = e / e.sum(axis=1, keepdims=True)
+            total += float(-np.log(np.clip(Q[np.arange(len(ym)), ym], 1e-12, 1.0)).sum())
+            n += len(ym)
+        return total / n
+
+    lo, hi = -4.0, 4.0
+    gr = (5 ** 0.5 - 1) / 2
+    c = hi - gr * (hi - lo)
+    d = lo + gr * (hi - lo)
+    fc, fd = nll(c), nll(d)
+    for _ in range(60):
+        if fc < fd:
+            hi, d, fd = d, c, fc
+            c = hi - gr * (hi - lo)
+            fc = nll(c)
+        else:
+            lo, c, fc = c, d, fd
+            d = lo + gr * (hi - lo)
+            fd = nll(d)
+    return float(np.exp((lo + hi) / 2))
+
+
+def _record_to_row(record: DecisionRecord) -> tuple[str, np.ndarray, int]:
+    """Validate one logged decision record -> (qtype, T=1 simplex, gold)."""
+    qtype = str(record.get("type", "")).lower()
+    if qtype not in DECISION_TYPES:
+        raise ValueError(
+            f"record has unknown type {record.get('type')!r}; "
+            f"expected one of {DECISION_TYPES}"
+        )
+    if record.get("logits") is not None:
+        P = softmax(np.asarray(record["logits"], dtype=np.float64))
+    elif record.get("probs") is not None:
+        P = np.asarray(record["probs"], dtype=np.float64)
+        s = P.sum()
+        if not np.isfinite(s) or s <= 0:
+            raise ValueError("record 'probs' must be a non-empty finite simplex")
+        P = P / s
+    else:
+        raise ValueError("record needs 'logits' or 'probs'")
+    gold = int(record["gold"])
+    if not 0 <= gold < len(P):
+        raise ValueError(f"gold index {gold} out of range for {len(P)} classes")
+    return qtype, P, gold
+
+
+class PerTypeTemperatureCalibrator:
+    """Per-answer-type temperature map for the decision endpoints.
+
+    Fit from logged decision records (see DecisionRecord). Types with fewer
+    than `min_rows` rows (default 50, decider's threshold) get NO entry and
+    fall back to the pooled temperature at serve time. Attach with
+    SystemOne.set_calibrator(); SystemOne._probs applies the question's own
+    temperature — the map is actually applied, not just stored.
+
+    Serializes to a calibration.json-compatible dict via to_dict():
+    {"temperature": pooled_T, "temperature_by_type": {...}, ...} which merges
+    cleanly alongside the existing route "temperature" entry.
+    """
+
+    def __init__(self, min_rows: int = MIN_ROWS_PER_TYPE) -> None:
+        self.min_rows = int(min_rows)
+        self.temperature_: float = 1.0  # pooled fallback
+        self.temperature_by_type_: Dict[str, float] = {}
+        self.rows_by_type_: Dict[str, int] = {}
+        self.fitted_: bool = False
+
+    def fit(
+        self, records: Sequence[DecisionRecord]
+    ) -> "PerTypeTemperatureCalibrator":
+        records = list(records)
+        if not records:
+            raise ValueError("need at least one decision record")
+        pooled: List[tuple[np.ndarray, int]] = []
+        per_type: Dict[str, List[tuple[np.ndarray, int]]] = {
+            t: [] for t in DECISION_TYPES
+        }
+        for record in records:
+            qtype, P, gold = _record_to_row(record)
+            per_type[qtype].append((P, gold))
+            pooled.append((P, gold))
+        self.temperature_ = _fit_temperature_nll(pooled)
+        self.temperature_by_type_ = {}
+        self.rows_by_type_ = {}
+        for qtype, rows in per_type.items():
+            self.rows_by_type_[qtype] = len(rows)
+            if len(rows) >= self.min_rows:
+                self.temperature_by_type_[qtype] = _fit_temperature_nll(rows)
+            # else: no entry -> temperature_for() falls back to pooled
+        self.fitted_ = True
+        return self
+
+    def temperature_for(self, qtype: str) -> float:
+        """Temperature for an answer type; pooled fallback when unfitted."""
+        if not self.fitted_:
+            raise AssertionError("call fit() first")
+        return float(
+            self.temperature_by_type_.get(str(qtype).lower(), self.temperature_)
+        )
+
+    def predict_proba(
+        self, scores: Sequence[float], qtype: str = "choice"
+    ) -> np.ndarray:
+        """softmax(scores / T_qtype) for one question's raw scores."""
+        T = self.temperature_for(qtype)
+        return softmax(np.asarray(scores, dtype=np.float64) / T)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """calibration.json-compatible dict (merges with existing keys)."""
+        if not self.fitted_:
+            raise AssertionError("call fit() first")
+        return {
+            "temperature": self.temperature_,
+            "temperature_by_type": dict(self.temperature_by_type_),
+            "per_type_rows": dict(self.rows_by_type_),
+            "min_rows_per_type": self.min_rows,
+            "fit_date": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "note": (
+                "per-answer-type temperature map (decider convention); types "
+                f"with fewer than {self.min_rows} rows fall back to the pooled "
+                "'temperature'"
+            ),
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "PerTypeTemperatureCalibrator":
+        """Load from a to_dict()/calibration.json-style dict. Fail-open on the
+        per-type entries: insane values are dropped so temperature_for()
+        falls back to the pooled temperature instead of serving garbage."""
+        obj = cls(min_rows=int(d.get("min_rows_per_type", MIN_ROWS_PER_TYPE)))
+        pooled = float(d.get("temperature", 1.0))
+        obj.temperature_ = pooled if (np.isfinite(pooled) and pooled > 0) else 1.0
+        obj.temperature_by_type_ = {}
+        for qtype, T in (d.get("temperature_by_type") or {}).items():
+            try:
+                Tf = float(T)
+            except (TypeError, ValueError):
+                continue
+            if str(qtype).lower() in DECISION_TYPES and np.isfinite(Tf) and Tf > 0:
+                obj.temperature_by_type_[str(qtype).lower()] = Tf
+        rows = d.get("per_type_rows") or {}
+        obj.rows_by_type_ = {
+            str(k).lower(): int(v) for k, v in rows.items() if str(k).lower() in DECISION_TYPES
+        }
+        obj.fitted_ = True
+        return obj
+
+    def save(self, path: str) -> str:
+        """Write the to_dict() payload to a JSON file."""
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(self.to_dict(), f, indent=2)
+        return path
+
+    @classmethod
+    def load(cls, path: str) -> "PerTypeTemperatureCalibrator":
+        """Load a map previously written by save()."""
+        with open(path, "r", encoding="utf-8") as f:
+            return cls.from_dict(json.load(f))
+
+
+def fit_temperature_by_type(
+    records: Sequence[DecisionRecord], min_rows: int = MIN_ROWS_PER_TYPE
+) -> PerTypeTemperatureCalibrator:
+    """Fit a per-answer-type temperature map from logged decision records."""
+    return PerTypeTemperatureCalibrator(min_rows=min_rows).fit(records)
+
+
+def load_calibrator_file(path: str) -> Any:
+    """Load a calibrator from a JSON file, any supported kind.
+
+    Per-type maps (dicts carrying "temperature_by_type") load as
+    PerTypeTemperatureCalibrator; anything else dict-shaped loads as
+    TemperatureCalibrator (fail-open to T=1 on insane values). JSON-only:
+    anything else raises instead of unpickling — pickle executes code at
+    load time, and the calibrator path is reachable from an env var, so a
+    fail-closed error beats a code-execution fallback. Re-save legacy
+    pickles with calibrator.save(path).
+    """
+    with open(path, "rb") as f:
+        raw = f.read()
+    try:
+        d = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        d = None
+    if isinstance(d, dict):
+        if "temperature_by_type" in d:
+            return PerTypeTemperatureCalibrator.from_dict(d)
+        return TemperatureCalibrator.from_dict(d)
+    raise ValueError(
+        f"calibrator at {path} is not JSON; re-save as JSON "
+        "(calibrator.save(path)) — pickle files are refused"
+    )
+
+
+def load_type_calibration(path: str) -> PerTypeTemperatureCalibrator | None:
+    """Load a per-type map from a calibration.json-style file.
+
+    Returns None when the file is missing/unreadable or carries no
+    "temperature_by_type" block (pooled-only files keep working — the caller
+    serves the pooled temperature as before).
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        if not isinstance(d, dict) or "temperature_by_type" not in d:
+            return None
+        return PerTypeTemperatureCalibrator.from_dict(d)
+    except (OSError, ValueError, TypeError):
+        return None

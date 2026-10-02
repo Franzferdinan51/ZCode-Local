@@ -18,9 +18,33 @@ is the endpoint passed to `post_json`:
     post_json("http://127.0.0.1:8765/v1/systemone", "local", body)
 
 Endpoints:
-    POST /v1/systemone        TypeSafe dialect (see below)
+    POST /v1/systemone        TypeSafe dialect (see below); also accepts
+                              SGLang's options-list question shape and
+                              yes_no questions, plus list-form questions;
+                              Clef's images/videos/media_kwargs, score
+                              legends, the noul key, and zero-token usage
+    POST /v1/decisions        SGLang's /v1/decisions dialect (choice / score /
+                              yes_no, label_mass), served by the local engine
+                              — one call, N typed questions, single batched
+                              pass (see below)
+    POST /v1/decide           JEV System 1 dialect (kind / state / question /
+                              options, images in state); native on the jev
+                              engine, text projection elsewhere (see below)
+    GET  /v1/decide/info      option limit, kinds, image support, backend
+    GET  /metrics            Prometheus request counters + latency sums
     POST /v1/systemone/route  model router: pick the cheapest sufficient
                               local tier for a task (see below)
+    POST /v1/systemone/rank-plans
+                              rank candidate plans for a task (see below);
+                              consults the Jeff-1 sidecar when enabled and
+                              blends its P(plan succeeds | task) 50/50 with
+                              the GLiClass scores (fail-open)
+    POST /v1/systemone/decide
+                              typed decision: {"state", "instructions",
+                              "criteria", "type"} — proxy to the decision
+                              sidecar when reachable (backend "decider"),
+                              else answer locally with the GLiClass engine
+                              (backend "fallback", fail-open)
     GET  /healthz, /           liveness
 
 Request body for /v1/systemone (TypeSafe dialect):
@@ -77,6 +101,7 @@ Only one local model is ever loaded, same as the rest of the package.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import datetime
 import json
 import logging
@@ -85,15 +110,67 @@ import re
 import sys
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from logging.handlers import RotatingFileHandler
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from .api import MAX_STATE_CHARS, SystemOne, validate_choice
+from .patterns import (
+    MAX_PLANS_PER_REQUEST,
+    MAX_QUESTIONS_PER_REQUEST,
+    MAX_STATE_CHARS,
+    BodyTooLarge,
+    api_token_ok,
+    check_body_length,
+    validate_choice,
+)
+
+try:
+    from .api import SystemOne
+except ImportError:  # slim install (no torch/gliclass): SGLang-engine or
+    # injected-engine mode only; create_engine raises a helpful error for
+    # local-engine construction.
+    SystemOne = None  # type: ignore[assignment,misc]
+
+
+from .jev_backend import JevDecideBackend
+from .jevk5_backend import JevK5ServerBackend
+from .rerank_backend import OnnxCrossEncoder, RerankBackend
+from .sglang_backend import HybridBackend, SGLangBackend
+from .scoring import (
+    apply_calibration,
+    apply_inventory,
+    cost_lambda,
+    disabled as scoring_disabled,
+    estimate_steps,
+    fetch_lmstudio_models,
+    load_calibration,
+    load_tool_registry,
+    model_top_n,
+    rank_models,
+    rank_plans,
+    score_tools,
+    start_inventory_refresher,
+    tool_floor,
+    tool_topk,
+)
+from .jeff1 import (
+    blend_rankings,
+    decide_via_jeff1,
+    jeff1_enabled,
+    jeff1_url,
+    rank_plans_via_jeff1,
+    second_opinion as jeff1_second_opinion,
+)
+from .calibration import load_type_calibration
+from .metrics import summarize as summarize_metrics
 
 # -- model router -----------------------------------------------------------
 
 REGISTRY_PATH = os.path.join(os.path.dirname(__file__), "model_registry.json")
+CALIBRATION_PATH = os.path.join(os.path.dirname(__file__), "calibration.json")
+TOOL_REGISTRY_PATH = os.path.join(os.path.dirname(__file__), "tool_registry.json")
+OPENAPI_PATH = os.path.join(os.path.dirname(__file__), "openapi.json")
 
 COST_BIAS_POLICIES = {
     "economy": "Aggressively prefer the cheapest tier that is still sufficiently capable.",
@@ -109,6 +186,15 @@ def load_registry(path: str | None = None) -> Dict[str, Dict[str, Any]]:
     tiers = data.get("tiers", data)
     if not isinstance(tiers, dict) or not tiers:
         raise ValueError("model registry must define a non-empty 'tiers' mapping")
+    # Pre-seed availability flags so the background inventory refresher only
+    # ever rebinds existing keys (atomic under the GIL) instead of growing
+    # model dicts while request threads iterate them (RuntimeError).
+    for entry in tiers.values():
+        if not isinstance(entry, dict):
+            continue
+        for m in entry.get("models", []) or []:
+            if isinstance(m, dict) and m.get("model_id"):
+                m.setdefault("available", False)
     return tiers
 
 
@@ -233,7 +319,8 @@ def task_labels_for(task: str) -> list:
 _HEAVY_PATTERNS = [
     r"debug(ging|ger)?s?\b",
     r"deadlock",
-    r"race condition",
+    r"\brac(e condition|ing)\b",
+    r"thread[- ]?safe\b",
     r"stack ?trace",
     r"traceback",
     r"segfault",
@@ -241,14 +328,18 @@ _HEAVY_PATTERNS = [
     r"multithread",
     r"concurren\w*",
     r"distributed",
+    r"\bcrdt\b",
     r"refactor",
+    r"restructur\w*",
+    r"\b\d+\s*-line\b",
     r"architect(ure)?",
     r"theorem",
     r"\bproof\b",
     r"\bprov(e|ing)\b",
     r"calculus",
     r"\bintegral\b",
-    r"differential equation",
+    r"\bdifferential\b",
+    r"\bdy/dx\b",
     r"linear algebra",
     r"cryptograph",
     r"compiler",
@@ -259,7 +350,13 @@ _HEAVY_PATTERNS = [
     r"compliance",
     r"medical",
     r"diagnos(is|ed|ing|tic)\b",
+    r"financial (report|filing)",
+    r"annual report",
+    r"\b\d+\s*-page\b",
+    r"\bsolvency\b",
     r"security audit",
+    r"\baudit\b.*\bsecur",
+    r"\bsecur\w* flaw",
     r"vulnerab",
     r"\bexploit\b",
     r"penetration test",
@@ -270,15 +367,19 @@ _HEAVY_PATTERNS = [
     r"\bnavigat\w*\b",
     r"\bscrol\w*\b",
     r"\bbrowser (automation|navigat\w*|tool\w*|agent\w*)\b",
+    r"page through",
+    r"\bautomat\w* this\b",
     r"system design",
     r"design a (system|distributed)",
     r"roadmap",
     r"performance tun",
 ]
 
-# Obvious "the tiny model is plenty" markers.
+# Obvious "the tiny model is plenty" markers. The summariz pattern carries a
+# negative lookahead: extractive/brevity-scoped summarization is trivial,
+# but analytical summarization ("causes of", "compare", ...) is not.
 _ECONOMY_PATTERNS = [
-    r"summariz",
+    r"summariz\w*\b(?!.*\b(causes|compare|contrast|versus|pros and cons|explain why)\b)",
     r"\bsummary\b",
     r"tl;?dr\b",
     r"one[- ]sentence",
@@ -298,12 +399,38 @@ _ECONOMY_PATTERNS = [
 # Ultra-trivial Q&A: bare arithmetic and short factual questions. Single-lookup
 # tasks where the cheapest tier is plenty. Kept separate from _ECONOMY_PATTERNS
 # because the short-question rule also needs a length + shape check (below).
+# Single-lookup shapes only — the imperative forms ("Name the capital...",
+# "Multiply 17 by 23.", "Convert 3 km to miles.") are just as trivial as the
+# interrogative ones. The short-question rule below excludes open-ended
+# advice/explanation questions (see _NONTRIVIAL_QUESTION_MARKERS).
 _TRIVIAL_ARITHMETIC_PATTERNS = [
     r"\d+\s*[+\-*/^]\s*\d+",  # bare arithmetic expression: 2+2, 3 * 4
     r"\bwhat is [\d][\d\s+\-*/().^%]*\??",  # "what is 2+2?"
     r"\bcalculat\w*\b",
+    r"\bcompute\b",
+    r"\b(multiply|divide)\b",
+    r"\b(find|compute|calculate)\b.*\bpercent of\b",
+    r"\bconvert\b.*\b(miles|kilometers|km|ounces|pounds|kg|grams|celsius|fahrenheit|inches|feet|meters)\b",
     r"\bhow much is\b",
     r"\bhow many\b",
+    r"^name the\b",
+]
+
+# Markers that disqualify a short "What/Who/...?" from the trivial rule: the
+# question asks for advice, recommendations, comparison, or an explanation —
+# not a single lookup fact.
+_NONTRIVIAL_QUESTION_MARKERS = [
+    r"\bstrategies\b",
+    r"\badvice\b",
+    r"\btips\b",
+    r"\bshould i\b",
+    r"\bpros and cons\b",
+    r"\badvantages and disadvantages\b",
+    r"\bwhat makes\b",
+    r"\bwhat happens when\b",
+    r"\bmust-see\b",
+    r"\bgifts?\b",
+    r"\bwhat gear\b",
 ]
 
 # Short factual questions ("What/Who/When/Where/Which ...?") under this length
@@ -336,6 +463,9 @@ def analyze_task(task: str) -> Dict[str, Any]:
         heavy_hits.append(f"long input (>{_LONG_INPUT_CHARS} chars)")
 
     # Ultra-trivial Q&A shapes: bare arithmetic + short factual questions.
+    # Heavy patterns still win on conflict (substance over form), and the
+    # classifier can only raise from here. Advice/explanation/recommendation
+    # questions are NOT single lookups, even when short and What-led.
     trivial_hits = _hits(_TRIVIAL_ARITHMETIC_PATTERNS)
     stripped = (task or "").strip()
     words = stripped.split()
@@ -344,6 +474,7 @@ def analyze_task(task: str) -> Dict[str, Any]:
         and stripped.endswith("?")
         and words
         and words[0].lower().rstrip(",") in _TRIVIAL_QUESTION_STARTERS
+        and not _hits(_NONTRIVIAL_QUESTION_MARKERS)
     ):
         trivial_hits.append(f"short {words[0].lower()}-question")
     if stripped.lower().startswith("define ") and len(stripped) <= _TRIVIAL_QUESTION_MAX_CHARS:
@@ -401,6 +532,7 @@ def route_decision(
     task: str,
     candidates: List[Dict[str, str]],
     cost_bias: str,
+    scoring: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Pick the cheapest sufficient tier for *task*.
 
@@ -417,9 +549,16 @@ def route_decision(
     Candidate order is capability order (cheapest first); the bundled
     registry lists tiers economy -> balanced -> heavy.
 
+    When `scoring` is provided ({"calibration": ...|None, "tools": [...],
+    "registry": {...}}), the route dict additionally gains the calibrated
+    decision surface: calibrated_probabilities, margin, uncertain,
+    ranked_models, ranked_tools/tool_scoring. confidence becomes the
+    (calibrated) probability of the routed tier. Without `scoring` the
+    legacy shape is returned unchanged (backward compatible).
+
     Returns the {"model_id", "tier", "rationale", "confidence",
     "probabilities", "cost_bias", "deterministic_tier", "signals", "effort",
-    "task_labels"} route dict.
+    "task_labels", ...} route dict.
     """
     # The registry is a name->entry mapping with no guaranteed key order;
     # sort candidates cheapest-first so the index math below is sound.
@@ -498,7 +637,8 @@ def route_decision(
         + "; ".join(notes)
         + f" (final confidence {conf:.2f})."
     )
-    return {
+    effort = _TIER_EFFORT.get(winner["tier"], "medium")
+    route: Dict[str, Any] = {
         "model_id": winner["model_id"],
         "tier": winner["tier"],
         "rationale": rationale,
@@ -508,10 +648,146 @@ def route_decision(
         "deterministic_tier": det["tier"],
         "signals": det["reasons"],
         # Effort hint for agent loops: coarse reasoning budget for this task.
-        "effort": _TIER_EFFORT.get(winner["tier"], "medium"),
+        "effort": effort,
         # Deterministic keyword labels for tool routing (see _TASK_LABEL_KEYWORDS).
         "task_labels": task_labels_for(task),
     }
+    if scoring is not None:
+        _apply_scoring(engine, task, route, blended, scoring)
+    return route
+
+
+_EFFORT_LEVELS = ("low", "medium", "high")
+
+
+def _apply_scoring(
+    engine: Any,
+    task: str,
+    route: Dict[str, Any],
+    blended: Dict[str, float],
+    scoring: Dict[str, Any],
+) -> None:
+    """Additive decision surface; mutates `route`. Never raises.
+
+    - calibrated_probabilities / margin / uncertain / calibrated; confidence
+      becomes the (calibrated) probability of the routed tier — not the
+      distribution top-1, which can differ when rules raise/escalate.
+    - uncertain -> effort bumps one level (low->medium->high).
+    - ranked_models: top-3 available by expected utility (advisory).
+    - ranked_tools: relevance-ranked tools, top-k with relevance >= floor;
+      skipped (cheap path) when uncertain or effort is low.
+    """
+    try:
+        cal = apply_calibration(blended, scoring.get("calibration"))
+        route["calibrated"] = cal["calibrated"]
+        route["calibrated_probabilities"] = cal["calibrated_probabilities"]
+        route["margin"] = cal["margin"]
+        route["uncertain"] = cal["uncertain"]
+        try:
+            winner_p = float(
+                (cal["calibrated_probabilities"] or {}).get(
+                    route.get("tier"), cal["confidence"]))
+        except (TypeError, ValueError):
+            winner_p = cal["confidence"]
+        route["confidence"] = round(winner_p, 4)
+
+        effort = route.get("effort", "medium")
+        if cal["uncertain"] and effort in _EFFORT_LEVELS:
+            bumped = _EFFORT_LEVELS[min(2, _EFFORT_LEVELS.index(effort) + 1)]
+            if bumped != effort:
+                route["effort"] = bumped
+                route["rationale"] += (
+                    f" Uncertain (margin {cal['margin']:.2f} < floor); "
+                    f"effort bumped to {bumped}, no tool pruning."
+                )
+
+        # Jeff-1 second head (uncertain routes only): record an advisory
+        # tier second opinion on the route. Never changes the routed tier.
+        if cal["uncertain"] and jeff1_enabled():
+            opinion = _jeff1_second_opinion(task, route, cal, scoring)
+            if opinion is not None:
+                route["jeff1_second_opinion"] = opinion
+                if not opinion.get("agree", True):
+                    route["rationale"] += (
+                        " Jeff-1 second opinion disagrees (advisory; tier "
+                        f"unchanged): {opinion.get('rationale', '')}"
+                    )
+
+        registry = scoring.get("registry") or {}
+        try:
+            route["ranked_models"] = rank_models(
+                registry, cal["calibrated_probabilities"],
+                topn=model_top_n())
+        except Exception:
+            route["ranked_models"] = []
+
+        # Cheap path: don't burn an engine call deciding tools for a task
+        # we're unsure about or that needs barely any reasoning.
+        if cal["uncertain"] or route.get("effort") == "low":
+            route["ranked_tools"] = []
+            route["tool_scoring"] = "skipped"
+            return
+        tools = scoring.get("tools") or []
+        try:
+            ranked = score_tools(engine, task, tools)
+        except Exception:
+            ranked = []
+        floor, topk = tool_floor(), tool_topk()
+        # No floor/topk configured -> unfiltered (fail-open, never prune blind).
+        ranked_tools = ranked if floor is None else [
+            t for t in ranked if t["relevance"] >= floor
+        ]
+        route["ranked_tools"] = ranked_tools if topk is None else ranked_tools[:topk]
+        route["tool_scoring"] = "full"
+    except Exception:
+        # Fail open: scoring must never break the route consumers rely on.
+        route.setdefault("ranked_models", [])
+        route.setdefault("ranked_tools", [])
+        route.setdefault("tool_scoring", "skipped")
+
+
+def _jeff1_second_opinion(
+    task: str,
+    route: Dict[str, Any],
+    cal: Dict[str, Any],
+    scoring: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Fetch Jeff-1's advisory tier second opinion; None on any failure.
+
+    Builds the candidate list from the scoring registry and hands the
+    uncertain route summary to the sidecar. Pure fail-open: every error
+    path returns None so the route stands on the GLiClass judgment alone.
+    """
+    try:
+        registry = scoring.get("registry") or {}
+        tiers = registry.get("tiers", registry) \
+            if isinstance(registry, dict) else {}
+        candidates = [
+            {"tier": name, "description": str(entry.get("description", ""))}
+            for name, entry in tiers.items()
+            if isinstance(name, str) and isinstance(entry, dict)
+        ]
+        if not candidates:
+            return None
+        result = jeff1_second_opinion(
+            task,
+            {
+                "tier": route.get("tier"),
+                "confidence": cal.get("confidence"),
+                "margin": cal.get("margin"),
+                "candidates": candidates,
+            },
+        )
+        if not isinstance(result, dict) or not result.get("tier"):
+            return None
+        return {
+            "tier": result["tier"],
+            "confidence": result.get("confidence"),
+            "agree": bool(result.get("agree")),
+            "rationale": str(result.get("rationale", "")),
+        }
+    except Exception:
+        return None
 
 
 # -- latency logging --------------------------------------------------------
@@ -541,6 +817,53 @@ def get_logger() -> Optional[logging.Logger]:
         logger.addHandler(handler)
         _logger = logger
         return logger
+
+
+class Metrics:
+    """Thread-safe per-endpoint request counters and latency sums.
+
+    One instance lives on the server (``server.metrics``); every request
+    records exactly one observation. Renders Prometheus text exposition
+    for GET /metrics. Never raises: observation failures are swallowed so
+    metrics can never break serving.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._counts: Dict[tuple, int] = {}
+        self._latency_ms: Dict[tuple, float] = {}
+
+    def observe(self, endpoint: str, status: int, latency_ms: float) -> None:
+        try:
+            key = (str(endpoint), int(status))
+            with self._lock:
+                self._counts[key] = self._counts.get(key, 0) + 1
+                self._latency_ms[key] = (
+                    self._latency_ms.get(key, 0.0) + float(latency_ms))
+        except Exception:
+            pass
+
+    def render_prometheus(self) -> str:
+        with self._lock:
+            items = sorted(self._counts.items())
+            lat = dict(self._latency_ms)
+        lines = [
+            "# HELP systemone_requests_total Requests served by endpoint and status.",
+            "# TYPE systemone_requests_total counter",
+        ]
+        for (endpoint, status), count in items:
+            lines.append(
+                f'systemone_requests_total{{endpoint="{endpoint}",'
+                f'status="{status}"}} {count}')
+        lines += [
+            "# HELP systemone_request_latency_ms_sum Total request latency by endpoint and status.",
+            "# TYPE systemone_request_latency_ms_sum counter",
+        ]
+        for (endpoint, status), count in items:
+            lines.append(
+                f'systemone_request_latency_ms_sum{{endpoint="{endpoint}",'
+                f'status="{status}"}} {lat.get((endpoint, status), 0.0):.1f}')
+        return "\n".join(lines) + "\n"
 
 
 def log_decision(record: Dict[str, Any]) -> None:
@@ -599,21 +922,80 @@ def translate_question(name: str, q: Dict[str, Any]) -> Dict[str, Any]:
 
     {"type": "choice", "criteria": {opt: desc|{...}}, "instructions": ...}
     becomes {"name", "type": "choice", "options": [...], "prompt": ...}.
+
+    Also accepts SGLang's /v1/systemone question shape (wire-compat):
+    {"type": "choice", "question": "...", "options": [{"name": ...}, ...]}
+    and {"type": "yes_no", "question": "..."} -> noul. The two shapes are
+    distinguished by the presence of "criteria" (TypeSafe) vs a list-valued
+    "options" (SGLang).
+
+    instructions is optional (Clef convention): when it is absent the
+    question ID stands in, so judges always see what is being decided.
     """
     qtype = q.get("type", "choice")
+    if qtype not in ("choice", "score", "noul", "yes_no"):
+        raise ValueError(
+            f"question {name!r} has unknown type {qtype!r}; "
+            "expected one of: choice, score, noul, yes_no")
+    if qtype == "yes_no":
+        # SGLang boolean question -> local noul; handled before the shape
+        # dispatch below since there are no options to speak of.
+        statement = (q.get("question")
+                     or _render_instructions(q.get("instructions"))
+                     or str(q.get("criteria", ""))
+                     or name)
+        return {"name": name, "type": "noul", "statement": statement}
     criteria = q.get("criteria", {}) or {}
+    if "criteria" not in q and isinstance(q.get("options"), list):
+        # SGLang shape: options are [{"name": ...}] or bare strings.
+        criteria = {}
+        for opt in q["options"]:
+            if isinstance(opt, dict):
+                label, desc = opt.get("name"), opt.get("description")
+            else:
+                label, desc = opt, None
+            if isinstance(label, str) and label and label not in criteria:
+                criteria[label] = desc
+    if isinstance(criteria, list):
+        # TypeSafe score shape: criteria IS the ordered level list.
+        criteria = {str(x): None for x in criteria}
+    if not isinstance(criteria, dict):
+        raise ValueError("question criteria must be an object or a list")
     options = list(criteria.keys())
-    prompt_bits = [_render_instructions(q.get("instructions"))]
+    if qtype in ("choice", "score") and len(options) < 2:
+        raise ValueError(
+            f"question {name!r} needs >= 2 options/levels, got {len(options)}")
+    sglang_question = str(q.get("question") or "") if "criteria" not in q else ""
+    prompt_bits = [
+        _render_instructions(q.get("instructions"))
+        or sglang_question
+        or f"Question '{name}'."
+    ]
+    if sglang_question and sglang_question not in prompt_bits[0]:
+        # SGLang shape carries the prompt as "question".
+        prompt_bits.append(sglang_question)
     prompt_bits.append(
         "Options:\n" + "\n".join(_render_criterion(k, v) for k, v in criteria.items())
     )
     prompt = "\n".join(b for b in prompt_bits if b).strip()
     if qtype == "score":
-        return {"name": name, "type": "score", "levels": options, "prompt": prompt}
+        return {"name": name, "type": "score", "levels": options,
+                "prompt": prompt,
+                "legend": {lv: (criteria[lv] if isinstance(criteria[lv], str)
+                                       and criteria[lv].strip() else lv)
+                           for lv in options}}
     if qtype == "noul":
         statement = prompt or str(criteria)
         return {"name": name, "type": "noul", "statement": statement}
-    return {"name": name, "type": "choice", "options": options, "prompt": prompt}
+    out: Dict[str, Any] = {"name": name, "type": "choice", "options": options,
+                           "prompt": prompt}
+    descs = {k: v for k, v in criteria.items()
+             if isinstance(v, str) and v.strip()}
+    if descs:
+        # Per-option descriptions for judges that score option text
+        # (RerankBackend); GLiClass/SGLang paths ignore this key.
+        out["descriptions"] = descs
+    return out
 
 
 def state_to_text(state: Any) -> str:
@@ -660,17 +1042,80 @@ def state_to_text(state: Any) -> str:
     return str(state)
 
 
+def translate_media(body: Dict[str, Any]) -> tuple[List[Any], List[Any]]:
+    """Clef media fields -> (images, videos).
+
+    Accepts Clef's top-level "images" / "videos" lists: over HTTP the items
+    are image/video URLs or data URLs (strings) or {"image"|"url": ...}
+    mappings; in-process callers may also pass frame arrays (lists).
+    "media_kwargs", when present, must be a mapping (reserved for
+    processor-backed engines; validated here, consumed downstream).
+    """
+    for key in ("images", "videos"):
+        raw = body.get(key, [])
+        if raw is None:
+            raw = []
+        if not isinstance(raw, list):
+            raise ValueError(f"'{key}' must be a list")
+        for i, item in enumerate(raw):
+            if isinstance(item, str) and item.strip():
+                continue  # URL / data URL
+            if isinstance(item, list):
+                continue  # frame array (in-process callers)
+            if isinstance(item, dict):
+                ref = item.get("image", item.get("url", ""))
+                if isinstance(ref, str) and ref.strip():
+                    continue
+                raise ValueError(
+                    f"'{key}[{i}]' mapping needs an 'image'/'url' string")
+            raise ValueError(
+                f"'{key}[{i}]' must be a URL/data-URL string, "
+                "an {'image'|'url': ...} mapping, or a frame array")
+    kwargs = body.get("media_kwargs", {})
+    if kwargs is None:
+        kwargs = {}
+    if not isinstance(kwargs, dict):
+        raise ValueError("'media_kwargs' must be a mapping")
+    return list(body.get("images") or []), list(body.get("videos") or [])
+
+
+def _engine_supports(engine: Any, param: str) -> bool:
+    """True when engine.systemone() accepts the `param` keyword."""
+    try:
+        import inspect
+
+        return param in inspect.signature(engine.systemone).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 def translate_body(body: Dict[str, Any]) -> tuple[str, List[Dict[str, Any]]]:
-    """Split a TypeSafe request into (state_text, systemone questions)."""
+    """Split a TypeSafe request into (state_text, systemone questions).
+
+    Accepts questions as a dict keyed by id (TypeSafe / SGLang style) or as
+    a list of question mappings carrying "id" (or "name").
+    """
     state_text = state_to_text(body.get("state", ""))
     if len(state_text) > MAX_STATE_CHARS:
         state_text = state_text[:MAX_STATE_CHARS]
+    raw = body.get("questions") or {}
+    if isinstance(raw, list):
+        items = [
+            (str(q.get("id") or q.get("name") or f"q{i}"), q)
+            for i, q in enumerate(raw)
+            if isinstance(q, dict)
+        ]
+    else:
+        items = list(raw.items())
     questions = [
         translate_question(name, q)
-        for name, q in (body.get("questions") or {}).items()
+        for name, q in items
     ]
     if not questions:
         raise ValueError("request must include at least one question")
+    if len(questions) > MAX_QUESTIONS_PER_REQUEST:
+        raise ValueError(
+            f"'questions' exceeds the {MAX_QUESTIONS_PER_REQUEST}-question cap")
     return state_text, questions
 
 
@@ -689,19 +1134,628 @@ def translate_answers(answers: Dict[str, Any]) -> Dict[str, Any]:
                 "confidence": ans["confidence"],
             }
         elif atype == "score":
+            dist = ans["distribution"]
             out[name] = {
                 "type": "score",
                 "level": ans["level"],
-                "distribution": ans["distribution"],
+                "distribution": dist,
                 "confidence": ans["confidence"],
+                # Clef legend: level -> description (identity when the
+                # engine was not given descriptions).
+                "legend": dict(ans.get("legend") or {lv: lv for lv in dist}),
             }
         elif atype == "noul":
             out[name] = {
                 "type": "noul",
                 "probability": ans["probability"],
+                # "noul" = P(true): the JevK5/Clef key; jevk5_backend
+                # already reads it, so round-trips preserve the value.
+                "noul": ans["probability"],
                 "answer": ans["answer"],
                 "confidence": ans["confidence"],
             }
+    return out
+
+
+# -- SGLang /v1/decisions compatibility --------------------------------------
+#
+# SGLang (nightly, post-2026-09-29 main) serves POST /v1/decisions: batched
+# typed questions (choice / score / yes_no) answered with zero completion
+# tokens. This shim answers the same dialect with the local engine, so any
+# client written against SGLang works unchanged against this box.
+#
+# Version status (verified 2026-09-30): the endpoints are main-branch only,
+# not in any tagged SGLang release (newest PyPI was 0.5.20) — pin a nightly
+# build until a release contains them. Image input is undocumented upstream
+# (input is string | object | array, rendered as compact JSON — the
+# Pokemon demo's "live game state" was structured data, not screenshots),
+# so image parts are noted and skipped here; SGLangBackend marks images=
+# experimental until proven against a live nightly server.
+
+
+def _option_names(options: Any) -> List[str]:
+    """SGLang option items: [{"name": str}] or bare strings -> [str]."""
+    names: List[str] = []
+    for o in options or []:
+        if isinstance(o, dict):
+            names.append(str(o.get("name", o)))
+        else:
+            names.append(str(o))
+    return names
+
+
+class Unprocessable(ValueError):
+    """422: the request was well-formed JSON but violates endpoint limits
+    (mirrors SGLang's /v1/decisions, which answers 422 on invalid bodies)."""
+
+
+def decisions_input_to_text(state_input: Any) -> str:
+    """SGLang /v1/decisions `input` -> plain text for the local engine.
+
+    Accepts a string, or OpenAI-style content parts
+    ({"type": "text", "text": ...}, {"type": "image_url", ...}). Image
+    parts are noted and skipped — the local GLiClass engine is text-only,
+    and SGLang's decisions docs describe no image path (experimental in
+    SGLangBackend; verify against a live nightly server).
+    """
+    if state_input is None:
+        return ""
+    if isinstance(state_input, str):
+        return state_input
+    if isinstance(state_input, list):
+        texts = []
+        skipped_images = 0
+        for part in state_input:
+            if not isinstance(part, dict):
+                texts.append(str(part))
+                continue
+            ptype = part.get("type")
+            if ptype == "text":
+                texts.append(str(part.get("text", "")))
+            elif ptype == "image_url":
+                skipped_images += 1
+            else:
+                texts.append(str(part))
+        text = "\n".join(t for t in texts if t).strip()
+        if skipped_images and not text:
+            raise Unprocessable(
+                "input contained only image parts; the local engine is "
+                "text-only (use SGLangBackend with a VLM for images)"
+            )
+        return text
+    return state_to_text(state_input)
+
+
+# SGLang's documented /v1/decisions limits; the local endpoint mirrors them
+# so clients get the same contract whichever server they point at.
+_DECISIONS_MAX_CHOICE_OPTIONS = 26
+_DECISIONS_MIN_CHOICE_OPTIONS = 2
+_DECISIONS_MAX_SCORE_LEVELS = 10
+_DECISIONS_MIN_SCORE_LEVELS = 2
+
+
+def translate_decisions_body(
+    body: Dict[str, Any],
+) -> tuple[str, List[Dict[str, Any]], List[str]]:
+    """SGLang /v1/decisions body -> (state_text, engine questions, id order).
+
+    {"input": str|parts,
+     "questions": [{"id", "type": "choice"|"score"|"yes_no",
+                    "question": str,
+                    "options": [{"name"}...] | [str...] (choice),
+                    "levels": [{"name"}...] | [str...] (score)}]}
+    """
+    state_text = decisions_input_to_text(body.get("input", ""))
+    if len(state_text) > MAX_STATE_CHARS:
+        state_text = state_text[:MAX_STATE_CHARS]
+    raw_questions = body.get("questions")
+    if not isinstance(raw_questions, list) or not raw_questions:
+        raise Unprocessable("'questions' must be a non-empty list")
+    if len(raw_questions) > MAX_QUESTIONS_PER_REQUEST:
+        raise Unprocessable(
+            f"'questions' exceeds the {MAX_QUESTIONS_PER_REQUEST}-question cap")
+    questions: List[Dict[str, Any]] = []
+    ids: List[str] = []
+    for i, rq in enumerate(raw_questions):
+        if not isinstance(rq, dict):
+            raise Unprocessable(f"question #{i} must be a mapping")
+        qid = str(rq.get("id") or rq.get("name") or f"q{i}")
+        if qid in ids:
+            raise Unprocessable(f"duplicate question id: {qid!r}")
+        ids.append(qid)
+        qtype = rq.get("type", "choice")
+        prompt = rq.get("question") or ""
+        if qtype == "choice":
+            options = _option_names(rq.get("options"))
+            if not (_DECISIONS_MIN_CHOICE_OPTIONS
+                    <= len(options) <= _DECISIONS_MAX_CHOICE_OPTIONS):
+                raise Unprocessable(
+                    f"choice question {qid!r} has {len(options)} options; "
+                    f"expected {_DECISIONS_MIN_CHOICE_OPTIONS}-"
+                    f"{_DECISIONS_MAX_CHOICE_OPTIONS}"
+                )
+            questions.append({"name": qid, "type": "choice",
+                              "options": options, "prompt": prompt})
+        elif qtype == "score":
+            levels = _option_names(rq.get("levels"))
+            if not (_DECISIONS_MIN_SCORE_LEVELS
+                    <= len(levels) <= _DECISIONS_MAX_SCORE_LEVELS):
+                raise Unprocessable(
+                    f"score question {qid!r} has {len(levels)} levels; "
+                    f"expected {_DECISIONS_MIN_SCORE_LEVELS}-"
+                    f"{_DECISIONS_MAX_SCORE_LEVELS}"
+                )
+            questions.append({"name": qid, "type": "score",
+                              "levels": levels, "prompt": prompt})
+        elif qtype == "yes_no":
+            if not prompt:
+                raise Unprocessable(
+                    f"yes_no question {qid!r} needs a 'question' string")
+            questions.append({"name": qid, "type": "noul", "statement": prompt})
+        else:
+            raise Unprocessable(
+                f"question {qid!r} has unknown type {qtype!r}; "
+                "expected one of: choice, score, yes_no")
+    return state_text, questions, ids
+
+
+def translate_decisions_answers(
+    answers: Dict[str, Any], ids: List[str]
+) -> Dict[str, Any]:
+    """Engine answers -> SGLang /v1/decisions {"answers": {id: {...}}}.
+
+    The local engine has no label-mass signal (that is an SGLang serving
+    concept), so "label_mass" is null here — the key stays for shape
+    compatibility with SGLang clients.
+    """
+    out: Dict[str, Any] = {}
+    for qid in ids:
+        ans = answers.get(qid)
+        if not isinstance(ans, dict):
+            continue
+        atype = ans.get("type")
+        if atype == "choice":
+            out[qid] = {
+                "type": "choice",
+                "choice": ans["choice"],
+                "probabilities": ans["probabilities"],
+                "label_mass": None,
+            }
+        elif atype == "score":
+            dist = ans["distribution"]
+            levels = list(dist.keys())
+            wmean = sum(i * float(dist[lv]) for i, lv in enumerate(levels))
+            out[qid] = {
+                "type": "score",
+                "score": wmean,
+                "probabilities": dist,
+                "label_mass": None,
+            }
+        elif atype == "noul":
+            out[qid] = {
+                "type": "yes_no",
+                "probability": ans["probability"],
+                "answer": ans["answer"],
+                "label_mass": None,
+            }
+    return out
+
+
+# -- JEV /v1/decide compatibility (AutoTrust JEV-27B-VL wire format) ----------
+#
+# JEV decision models (JEV-27B-VL model card,
+# https://huggingface.co/autotrust/JEV-27B-VL) serve System 1 over
+# POST /v1/decide: {kind, state, question, options?} with kind = noul |
+# choice | score, state = string | JSON | list mixing text and images, and
+# a calibrated probability for every option in the reply. This shim
+# answers the same dialect: clients written against serve_decide.py or a
+# hosted Jev API work unchanged against this box.
+#
+# With SYSTEMONE_ENGINE=jev the request is forwarded natively (images
+# preserved); every other engine answers the text projection (image parts
+# noted and skipped, reported in "warnings").
+
+_JEV_DECIDE_KINDS = ("noul", "choice", "score")
+_JEV_DECIDE_MAX_OPTIONS = 256
+
+
+def decide_option_limit(engine: Any, backend_name: str) -> int:
+    """Max choice options /v1/decide serves on this engine.
+
+    Native JEV servers take the wire-format 256; the SGLang engine caps at
+    26 (SGLang's /v1/decisions limit); the local GLiClass pass width fits
+    255. Anything above the serving engine's limit is a 422, mirroring
+    /v1/decisions behavior.
+    """
+    if isinstance(engine, JevDecideBackend):
+        return 256
+    if backend_name == "sglang":
+        return 26
+    return 255
+
+
+def decide_state_parts(state: Any) -> tuple[str, List[str]]:
+    """JEV /v1/decide `state` -> (text, image_refs).
+
+    Accepts a string, a JSON value, or a list mixing text with images in
+    the model card's {"image": ...} form or OpenAI image_url parts.
+    """
+    if state is None:
+        return "", []
+    if isinstance(state, str):
+        return state, []
+    if isinstance(state, list):
+        texts: List[str] = []
+        images: List[str] = []
+        for part in state:
+            if isinstance(part, str):
+                texts.append(part)
+            elif isinstance(part, dict) and "image" in part:
+                images.append(str(part["image"]))
+            elif isinstance(part, dict) and part.get("type") == "text":
+                texts.append(str(part.get("text", "")))
+            elif isinstance(part, dict) and part.get("type") == "image_url":
+                inner = part.get("image_url") or {}
+                images.append(
+                    str(inner.get("url", "") if isinstance(inner, dict) else inner)
+                )
+            else:
+                texts.append(state_to_text(part))
+        return "\n".join(t for t in texts if t).strip(), [i for i in images if i]
+    return state_to_text(state), []
+
+
+def translate_decide_body(
+    body: Dict[str, Any],
+) -> tuple[str, str, List[str], str, List[str]]:
+    """JEV /v1/decide body -> (kind, state_text, images, question, options)."""
+    kind = body.get("kind")
+    if kind not in _JEV_DECIDE_KINDS:
+        raise Unprocessable(
+            f"'kind' must be one of {', '.join(_JEV_DECIDE_KINDS)}"
+        )
+    if "state" not in body:
+        raise Unprocessable("request must include 'state'")
+    state_text, images = decide_state_parts(body.get("state"))
+    if len(state_text) > MAX_STATE_CHARS:
+        state_text = state_text[:MAX_STATE_CHARS]
+    question = body.get("question")
+    if not isinstance(question, str) or not question.strip():
+        raise Unprocessable("request must include a non-empty 'question' string")
+    options: List[str] = []
+    if kind == "choice":
+        raw = body.get("options")
+        if not isinstance(raw, list) or not (
+            2 <= len(raw) <= _JEV_DECIDE_MAX_OPTIONS
+        ):
+            raise Unprocessable(
+                "'options' must be a list of 2-"
+                f"{_JEV_DECIDE_MAX_OPTIONS} strings for kind 'choice'"
+            )
+        options = [str(o) for o in raw]
+    elif kind == "noul":
+        options = ["false", "true"]
+    else:
+        options = [str(i) for i in range(6)]
+    return kind, state_text, images, question.strip(), options
+
+
+def translate_decide_answer(
+    kind: str,
+    options: List[str],
+    answer: Dict[str, Any],
+    model: str,
+    latency_ms: Any,
+    adaptation: str = "native",
+) -> Dict[str, Any]:
+    """One engine answer -> JEV /v1/decide response mapping."""
+    if kind == "noul":
+        probs = [1.0 - float(answer["probability"]), float(answer["probability"])]
+    elif kind == "score":
+        dist = answer.get("distribution") or {}
+        probs = [float(dist.get(o, 0.0)) for o in options]
+    else:
+        dist = answer.get("probabilities") or {}
+        probs = [float(dist.get(o, 0.0)) for o in options]
+    total = sum(probs)
+    if total > 0:
+        probs = [p / total for p in probs]
+    else:
+        probs = [1.0 / len(options)] * len(options)
+    idx = max(range(len(probs)), key=probs.__getitem__)
+    try:
+        elapsed = float(latency_ms) / 1000.0 if latency_ms is not None else 0.0
+    except (TypeError, ValueError):
+        elapsed = 0.0
+    return {
+        "kind": kind,
+        "effective_kind": kind,
+        "options": options,
+        "probabilities": probs,
+        "choice_index": idx,
+        "choice": options[idx],
+        "adaptation": adaptation,
+        "protocol": "jev27-bare-v1",
+        "model": model,
+        "usage": {},
+        "num_model_requests": 1,
+        "elapsed_seconds": elapsed,
+    }
+
+
+# -- typed decision endpoint (/v1/systemone/decide) --------------------------
+#
+# Request/response schema mirrors the Jeff-1 sidecar's POST /v1/jeff1/decide
+# so the shim can proxy (primary) or answer locally (fail-open fallback)
+# with identical response shapes. Request validation mirrors the sidecar's
+# decide validators; the fallback runs the very same GLiClass machinery as
+# /v1/systemone — state-first prompt rows via build_decision_prompts(),
+# the question's own per-type temperature when the engine carries a fitted
+# per-answer-type map, and the TypeSafe-compatible confidence helpers.
+# Confidence/temperature conventions are adapted from Mapika/decider
+# (Apache-2.0); the implementation here is original.
+
+DECIDE_TYPES = ("choice", "noul", "score")
+"""Answer types accepted by /v1/systemone/decide."""
+
+_DECIDE_METRICS_LOG_NAME = "decide-metrics.log"
+_DECIDE_RECORDS_MAX = 5000
+
+
+def _decide_instructions(body: Dict[str, Any]) -> str:
+    instructions = body.get("instructions")
+    if not isinstance(instructions, str) or not instructions.strip():
+        raise ValueError("request must include a non-empty 'instructions' string")
+    return instructions.strip()
+
+
+def _decide_choice_criteria(raw: Any) -> Dict[str, Optional[str]]:
+    """choice criteria -> ordered {label: description} (mirrors the sidecar)."""
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError(
+            "'criteria' must be a non-empty mapping of label -> description")
+    criteria: Dict[str, Optional[str]] = {}
+    for label, desc in raw.items():
+        if not isinstance(label, str) or not label:
+            raise ValueError("criteria labels must be non-empty strings")
+        if desc is not None and not isinstance(desc, str):
+            raise ValueError(
+                f"description for label '{label}' must be a string or null")
+        criteria[label] = desc
+    return criteria
+
+
+def _decide_score_levels(raw: Any) -> List[Tuple[str, Optional[str]]]:
+    """score criteria -> [(level_label, description)] in level order.
+
+    Accepts a dict keyed by contiguous level indexes "0".."n-1" or an
+    ordered list of level descriptions (mirrors the sidecar).
+    """
+    indexed: Dict[int, Any] = {}
+    if isinstance(raw, list) and raw:
+        indexed = dict(enumerate(raw))
+    elif isinstance(raw, dict) and raw:
+        for key in raw:
+            try:
+                i = int(key)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    "score 'criteria' keys must be level indexes '0'..'n-1'")
+            if i < 0 or i in indexed:
+                raise ValueError(
+                    "score 'criteria' keys must be level indexes '0'..'n-1'")
+            indexed[i] = raw[key]
+    else:
+        raise ValueError(
+            "score 'criteria' must be a non-empty list of level descriptions "
+            "or a mapping '0'..'n-1' -> description")
+    n = len(indexed)
+    if sorted(indexed) != list(range(n)):
+        raise ValueError(
+            "score 'criteria' keys must be contiguous level indexes '0'..'n-1'")
+    levels: List[Tuple[str, Optional[str]]] = []
+    for i in range(n):
+        desc = indexed[i]
+        if desc is not None and not isinstance(desc, str):
+            raise ValueError(
+                f"description for level '{i}' must be a string or null")
+        levels.append((str(i), desc))
+    return levels
+
+
+def _decide_noul_descriptions(raw: Any) -> Tuple[Optional[str], Optional[str]]:
+    """Optional noul criteria -> (yes_desc, no_desc) (mirrors the sidecar)."""
+    if raw is None:
+        return None, None
+    if isinstance(raw, dict):
+        unknown = set(raw) - {"yes", "no", "true", "false"}
+        if unknown:
+            raise ValueError(
+                f"unknown noul criteria keys: {sorted(unknown)}; use "
+                "{yes, no} or {true, false}")
+        if "yes" in raw or "no" in raw:
+            yes_desc, no_desc = raw.get("yes"), raw.get("no")
+        else:
+            yes_desc, no_desc = raw.get("true"), raw.get("false")
+    elif isinstance(raw, (list, tuple)) and len(raw) == 2:
+        yes_desc, no_desc = raw[0], raw[1]
+    else:
+        raise ValueError(
+            "'criteria' for noul must be null, a {yes, no} or {true, false} "
+            "mapping, or a 2-item [yes, no] list")
+    for name, desc in (("yes", yes_desc), ("no", no_desc)):
+        if desc is not None and not isinstance(desc, str):
+            raise ValueError(f"'criteria.{name}' must be a string or null")
+    return yes_desc, no_desc
+
+
+def _decide_labels_block(qtype: str, instructions: str,
+                         criteria: Any) -> Tuple[str, List[str], str]:
+    """Validate decide criteria -> (qtype, ordered labels, prompt text).
+
+    The prompt text embeds the label descriptions so the local GLiClass
+    fallback sees the same criterion definitions the sidecar would.
+    """
+    if qtype == "choice":
+        crit = _decide_choice_criteria(criteria)
+        labels = list(crit.keys())
+        lines = [instructions, "", "Labels:"]
+        for lab, desc in crit.items():
+            lines.append(f"- {lab}" + (f": {desc}" if desc else ""))
+        return qtype, labels, "\n".join(lines).strip()
+    if qtype == "score":
+        levels = _decide_score_levels(criteria)
+        labels = [lab for lab, _ in levels]
+        lines = [instructions, "", "Levels (in order):"]
+        for lab, desc in levels:
+            lines.append(f"- {lab}" + (f": {desc}" if desc else ""))
+        return qtype, labels, "\n".join(lines).strip()
+    yes_desc, no_desc = _decide_noul_descriptions(criteria)
+    lines = [instructions]
+    if yes_desc:
+        lines.append(f"'yes' means: {yes_desc}")
+    if no_desc:
+        lines.append(f"'no' means: {no_desc}")
+    return qtype, ["yes", "no"], "\n".join(lines).strip()
+
+
+def _fallback_decide(engine: Any, state_text: str, qtype: str,
+                     labels: List[str], prompt: str
+                     ) -> Tuple[Dict[str, Any], List[float]]:
+    """Answer one typed decision with the local GLiClass engine.
+
+    The fail-open path behind /v1/systemone/decide: the very same
+    machinery as /v1/systemone — engine.systemone() builds state-first
+    prompt rows (build_decision_prompts), applies the question's own
+    per-type temperature when the engine carries a fitted
+    PerTypeTemperatureCalibrator, and reports the TypeSafe-compatible
+    confidence helpers (Mapika/decider semantics, Apache-2.0).
+
+    Returns (sidecar-shaped decision dict, ordered probability vector).
+    """
+    if qtype == "noul":
+        question: Dict[str, Any] = {"name": "decision", "type": "noul",
+                                    "statement": prompt}
+    elif qtype == "score":
+        question = {"name": "decision", "type": "score", "levels": labels,
+                    "prompt": prompt}
+    else:
+        question = {"name": "decision", "type": "choice", "options": labels,
+                    "prompt": prompt}
+    answers = engine.systemone(state_text, [question])
+    ans = answers["decision"]
+    if qtype == "choice":
+        probs = [float(ans["probabilities"][lab]) for lab in labels]
+        return {
+            "type": "choice",
+            "label": ans["choice"],
+            "probabilities": {lab: round(p, 4) for lab, p in zip(labels, probs)},
+            "confidence": round(float(ans["confidence"]), 4),
+        }, probs
+    if qtype == "score":
+        probs = [float(ans["distribution"][lab]) for lab in labels]
+        return {
+            "type": "score",
+            "level": ans["level"],
+            "distribution": {lab: round(p, 4) for lab, p in zip(labels, probs)},
+            "confidence": round(float(ans["confidence"]), 4),
+        }, probs
+    p_yes = float(ans["probability"])
+    probs = [p_yes, 1.0 - p_yes]
+    return {
+        "type": "noul",
+        "label": "yes" if ans["answer"] else "no",
+        "probabilities": {"yes": round(p_yes, 4), "no": round(1.0 - p_yes, 4)},
+        "confidence": round(float(ans["confidence"]), 4),
+    }, probs
+
+
+def _decide_temperature_info(engine: Any,
+                             qtype: str) -> Optional[Dict[str, Any]]:
+    """Per-type temperature info for the decide response.
+
+    Reported only when the engine actually carries a fitted
+    per-answer-type calibrator (decider's >=1.4.0 applied-per-type
+    semantics); otherwise the key is omitted from the response.
+    """
+    cal = getattr(engine, "calibrator", None)
+    if cal is None or not getattr(cal, "fitted_", False):
+        return None
+    if not hasattr(cal, "temperature_for"):
+        return None
+    try:
+        per_type = {
+            str(t): float(v)
+            for t, v in dict(getattr(cal, "temperature_by_type_", {}) or {}).items()
+        }
+        return {
+            "applied": float(cal.temperature_for(qtype)),
+            "pooled": float(cal.temperature_),
+            "per_type": per_type,
+        }
+    except Exception:
+        return None
+
+
+def record_decide_metric(server: Any, record: Dict[str, Any]) -> None:
+    """Record one fallback decision for offline calibration and metrics.
+
+    Kept in a bounded in-memory deque on the server and appended to a
+    JSONL log (logs/decide-metrics.log; SYSTEMONE_DECIDE_LOG_FILE
+    overrides; SYSTEMONE_LOG_DISABLE=1 silences). Records carry no gold
+    labels at serve time, so ECE/Brier/NLL are computed later by
+    decide_metrics_summary() over gold-annotated rows (e.g. backfilled by
+    a calibration battery). Never raises.
+    """
+    try:
+        rec = dict(record)
+        rec["ts"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        buf = getattr(server, "decide_records", None)
+        if buf is not None:
+            buf.append(rec)
+        if os.environ.get("SYSTEMONE_LOG_DISABLE") == "1":
+            return
+        path = os.environ.get("SYSTEMONE_DECIDE_LOG_FILE") or os.path.join(
+            os.path.dirname(__file__), "logs", _DECIDE_METRICS_LOG_NAME)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec) + "\n")
+    except Exception:
+        pass
+
+
+def decide_metrics_summary(
+    records: Sequence[Dict[str, Any]],
+) -> Dict[str, Dict[str, float]]:
+    """Per-type ECE/Brier/NLL via systemone.metrics for gold-annotated rows.
+
+    Pure function: groups records carrying a valid integer "gold" label by
+    "type" and returns {type: metrics.summarize(...)} — decider's summarize
+    convention (accuracy, ece_15, brier, nll, aurc, selective accuracies;
+    metric definitions adapted from Mapika/decider, Apache-2.0). Records
+    without gold are skipped; types with no gold rows are absent.
+    """
+    groups: Dict[str, Dict[str, List[Any]]] = {}
+    for r in records:
+        if not isinstance(r, dict):
+            continue
+        try:
+            qtype = str(r["type"]).lower()
+            probs = [float(x) for x in r["probs"]]
+            gold = int(r["gold"])
+            if not (0 <= gold < len(probs)) or qtype not in DECIDE_TYPES:
+                continue
+        except (KeyError, TypeError, ValueError):
+            continue
+        g = groups.setdefault(qtype, {"y": [], "P": []})
+        g["y"].append(gold)
+        g["P"].append(probs)
+    out: Dict[str, Dict[str, float]] = {}
+    for qtype, g in groups.items():
+        try:
+            out[qtype] = summarize_metrics(g["y"], g["P"], name=qtype)
+        except Exception:
+            continue
     return out
 
 
@@ -716,49 +1770,387 @@ class ShimHandler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("X-Request-ID", getattr(self, "_request_id", "-"))
         self.end_headers()
         self.wfile.write(data)
+        self._last_status = code
+
+    def _send_text(self, code: int, text: str, ctype: str = "text/plain") -> None:
+        data = text.encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("X-Request-ID", getattr(self, "_request_id", "-"))
+        self.end_headers()
+        self.wfile.write(data)
+        self._last_status = code
+
+    def _begin_request(self) -> float:
+        """Stamp the request ID (client-supplied or fresh) and start timing."""
+        incoming = (self.headers.get("X-Request-ID") or "").strip()
+        self._request_id = incoming[:64] if incoming else uuid.uuid4().hex[:16]
+        self._last_status = 0
+        return time.perf_counter()
+
+    def _record_metrics(self, t0: float) -> None:
+        metrics = getattr(self.server, "metrics", None)
+        if metrics is None:
+            return
+        latency_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+        metrics.observe(self.path, getattr(self, "_last_status", 0), latency_ms)
 
     def _read_body(self) -> Dict[str, Any]:
-        length = int(self.headers.get("Content-Length", 0))
+        length = check_body_length(self.headers)
         return json.loads(self.rfile.read(length) or b"{}")
 
     def _handle_systemone(self) -> tuple[int, Dict[str, Any]]:
         """POST /v1/systemone -> (status, payload)."""
         body = self._read_body()
         state_text, questions = translate_body(body)
+        images, videos = translate_media(body)
+        engine = self.server.engine
+        kwargs: Dict[str, Any] = {}
+        if images and _engine_supports(engine, "images"):
+            kwargs["images"] = images
+        if videos and _engine_supports(engine, "videos"):
+            kwargs["videos"] = videos
+        answers = engine.systemone(state_text, questions, **kwargs)
+        meta = answers.get("_meta", {}) if isinstance(answers, dict) else {}
+        # Clef usage: decisions take zero completion tokens; input tokens
+        # ride along when the engine counted them.
+        usage: Dict[str, Any] = {"output_tokens": 0}
+        if isinstance(meta.get("input_tokens"), int):
+            usage["input_tokens"] = meta["input_tokens"]
+        payload: Dict[str, Any] = {
+            "answers": translate_answers(answers),
+            "model": engine.model_name,
+            "usage": usage,
+            "latency_ms": meta.get("latency_ms"),
+        }
+        if images or videos:
+            dropped = meta.get("media_dropped") or {}
+            payload["media"] = {"images": len(images), "videos": len(videos)}
+            dropped_imgs = int(dropped.get("images", 0) or 0)
+            dropped_vids = int(dropped.get("videos", 0) or 0)
+            if not _engine_supports(engine, "images"):
+                dropped_imgs = len(images)
+            if not _engine_supports(engine, "videos"):
+                dropped_vids = len(videos)
+            if dropped_imgs or dropped_vids:
+                bits = []
+                if dropped_imgs:
+                    bits.append(f"{dropped_imgs} image(s)")
+                if dropped_vids:
+                    bits.append(f"{dropped_vids} video(s)")
+                payload["warnings"] = [
+                    f"{' and '.join(bits)} dropped: the "
+                    f"{getattr(self.server, 'engine_backend', 'local')} "
+                    "engine has no media path for them"
+                ]
+        return 200, payload
+
+    def _handle_decisions(self) -> tuple[int, Dict[str, Any]]:
+        """POST /v1/decisions -> (status, payload).
+
+        SGLang's /v1/decisions request/response dialect, served by the local
+        engine: one POST carries the state plus N typed questions and they
+        are answered in a single batched pass. Lets clients written against
+        SGLang work unchanged against this box (label_mass is null here —
+        that signal only exists on a real SGLang server; see
+        systemone/sglang_backend.py).
+        """
+        body = self._read_body()
+        try:
+            state_text, questions, ids = translate_decisions_body(body)
+        except Unprocessable as e:
+            return 422, {"error": f"unprocessable: {e}"}
         answers = self.server.engine.systemone(state_text, questions)
         return 200, {
-            "answers": translate_answers(answers),
+            "answers": translate_decisions_answers(answers, ids),
             "model": self.server.engine.model_name,
             "usage": {},
             "latency_ms": answers.get("_meta", {}).get("latency_ms"),
+        }
+
+    def _handle_decide_v1(self) -> tuple[int, Dict[str, Any]]:
+        """POST /v1/decide -> (status, payload).
+
+        JEV System 1 dialect (kind/state/question/options), served natively
+        by the jev engine (images preserved) or via the text projection on
+        every other engine (image parts noted, skipped, and reported in
+        "warnings"). Lets clients written against serve_decide.py or a
+        hosted Jev API work unchanged against this box.
+        """
+        body = self._read_body()
+        try:
+            kind, state_text, images, question, options = translate_decide_body(body)
+        except Unprocessable as e:
+            return 422, {"error": f"unprocessable: {e}"}
+        engine = self.server.engine
+        backend_name = getattr(self.server, "engine_backend", "custom")
+        limit = decide_option_limit(engine, backend_name)
+        if kind == "choice" and len(options) > limit:
+            return 422, {"error": (
+                f"unprocessable: {len(options)} options exceeds the "
+                f"{backend_name} engine's limit of {limit} "
+                "(use SYSTEMONE_ENGINE=jev for the full 256)"
+            )}
+        if isinstance(engine, JevDecideBackend):
+            resp = engine.decide(
+                kind, state_text, question,
+                options if kind == "choice" else None,
+                images=images,
+            )
+            return 200, resp
+        if images and not state_text:
+            return 422, {"error": (
+                "unprocessable: state contained only image parts; the "
+                f"{getattr(self.server, 'engine_backend', 'local')} engine "
+                "is text-only (use SYSTEMONE_ENGINE=jev with a VLM for images)"
+            )}
+        if kind == "choice":
+            question_spec: Dict[str, Any] = {
+                "name": "q", "type": "choice",
+                "options": options, "prompt": question,
+            }
+        elif kind == "score":
+            question_spec = {
+                "name": "q", "type": "score",
+                "levels": options, "prompt": question,
+            }
+        else:
+            question_spec = {"name": "q", "type": "noul", "statement": question}
+        answers = engine.systemone(state_text, [question_spec])
+        payload = translate_decide_answer(
+            kind, options, answers["q"], engine.model_name,
+            answers.get("_meta", {}).get("latency_ms"),
+            adaptation="text-projection",
+        )
+        if images:
+            payload["warnings"] = [
+                f"{len(images)} image(s) dropped: the "
+                f"{getattr(self.server, 'engine_backend', 'local')} engine "
+                "is text-only (use SYSTEMONE_ENGINE=jev with a VLM for images)"
+            ]
+        return 200, payload
+
+    def _scoring_ctx(self) -> Dict[str, Any]:
+        return {
+            "calibration": getattr(self.server, "calibration", None),
+            "tools": getattr(self.server, "tools", []),
+            "registry": getattr(self.server, "registry", {}),
         }
 
     def _handle_route(self) -> tuple[int, Dict[str, Any]]:
         """POST /v1/systemone/route -> (status, payload)."""
         body = self._read_body()
         task, cost_bias, candidates = parse_route_body(body, self.server.registry)
-        route = route_decision(self.server.engine, task, candidates, cost_bias)
+        route = route_decision(
+            self.server.engine, task, candidates, cost_bias,
+            scoring=self._scoring_ctx(),
+        )
         return 200, {
             "route": route,
             "model": self.server.engine.model_name,
             "usage": {},
         }
 
+    def _handle_rank_plans(self) -> tuple[int, Dict[str, Any]]:
+        """POST /v1/systemone/rank-plans -> (status, payload).
+
+        Body: {"task": "...", "plans": [{"id": "...", "text": "..."}, ...]}.
+        Scores each plan's P(success | task) with the zero-shot head minus a
+        cost penalty (est_steps x routed-tier cost, normalized). The ranking
+        (not just the winner) is returned for the run log.
+        """
+        body = self._read_body()
+        task = body.get("task")
+        if not isinstance(task, str) or not task.strip():
+            raise ValueError("request must include a non-empty 'task' string")
+        plans = body.get("plans")
+        if not isinstance(plans, list) or not plans:
+            raise ValueError("'plans' must be a non-empty list")
+        if len(plans) > MAX_PLANS_PER_REQUEST:
+            raise ValueError(
+                f"'plans' exceeds the {MAX_PLANS_PER_REQUEST}-plan cap")
+        for p in plans:
+            if not isinstance(p, dict) or not isinstance(p.get("text"), str):
+                raise ValueError("each plan must be a mapping with a 'text' string")
+        _, _, candidates = parse_route_body(
+            {"task": task.strip()}, self.server.registry)
+        route = route_decision(
+            self.server.engine, task.strip(), candidates, "balanced",
+            scoring=self._scoring_ctx(),
+        )
+        tier_cost = None
+        reg = self.server.registry or {}
+        tiers = reg.get("tiers", reg) if isinstance(reg, dict) else {}
+        entry = tiers.get(route["tier"]) if isinstance(tiers, dict) else None
+        if isinstance(entry, dict):
+            for m in entry.get("models", []) or []:
+                if isinstance(m, dict) and m.get("model_id") == route["model_id"]:
+                    try:
+                        tier_cost = float(m["cost"])
+                    except (KeyError, TypeError, ValueError):
+                        pass
+                    break
+        ranking = rank_plans(self.server.engine, task.strip(), plans, tier_cost)
+        jeff1: Dict[str, Any] = {"consulted": False, "latency_ms": None,
+                                 "blended": False}
+        if jeff1_enabled():
+            t0 = time.perf_counter()
+            stub_plans = [
+                {"id": p.get("id", f"plan_{i}"), "text": p.get("text") or ""}
+                for i, p in enumerate(plans)
+            ]
+            jeff_ranking = rank_plans_via_jeff1(task.strip(), stub_plans)
+            jeff1["latency_ms"] = round((time.perf_counter() - t0) * 1000.0, 1)
+            if jeff_ranking is not None:
+                ranking = blend_rankings(ranking, jeff_ranking, tier_cost)
+                jeff1["consulted"] = True
+                jeff1["blended"] = True
+        return 200, {
+            "task": task.strip(),
+            "tier": route["tier"],
+            "ranking": ranking,
+            "jeff1": jeff1,
+            "model": self.server.engine.model_name,
+            "usage": {},
+        }
+
+
+    def _handle_decide(self) -> tuple[int, Dict[str, Any]]:
+        """POST /v1/systemone/decide -> (status, payload).
+
+        Body: {"state", "instructions", "criteria", "type"} — the decision
+        sidecar's decide schema. The primary path proxies the request to
+        the sidecar (backend "decider", the sole backend). When the sidecar
+        is unreachable, 404s
+        (endpoint not deployed yet), or returns a malformed reply, the
+        request fails open to the local GLiClass engine
+        (backend "fallback") via the same machinery as /v1/systemone.
+        """
+        body = self._read_body()
+        if not isinstance(body, dict):
+            raise ValueError("request body must be a JSON object")
+        if "state" not in body:
+            raise ValueError("request must include 'state'")
+        instructions = _decide_instructions(body)
+        qtype = body.get("type")
+        if qtype not in DECIDE_TYPES:
+            raise ValueError("'type' must be one of 'choice', 'noul', 'score'")
+        qtype, labels, prompt = _decide_labels_block(
+            qtype, instructions, body.get("criteria"))
+        state_text = state_to_text(body["state"])
+        if len(state_text) > MAX_STATE_CHARS:
+            state_text = state_text[:MAX_STATE_CHARS]
+
+        t0 = time.perf_counter()
+        jeff1 = decide_via_jeff1({
+            "state": body["state"],
+            "instructions": instructions,
+            "criteria": body.get("criteria"),
+            "type": qtype,
+        })
+        if jeff1 is not None:
+            payload = dict(jeff1)
+            # Trust the sidecar's own backend report ("decider", the sole
+            # backend); fall back to that label for sidecars that don't
+            # report one.
+            payload["backend"] = jeff1.get("backend") or "decider"
+            payload["latency_ms"] = round((time.perf_counter() - t0) * 1000.0, 1)
+            return 200, payload
+
+        # Fail-open fallback: the local GLiClass decision path.
+        decision, ordered_probs = _fallback_decide(
+            self.server.engine, state_text, qtype, labels, prompt)
+        latency_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+        payload = dict(decision)
+        payload["backend"] = "fallback"
+        payload["latency_ms"] = latency_ms
+        payload["model"] = getattr(self.server.engine, "model_name", "?")
+        temp_info = _decide_temperature_info(self.server.engine, qtype)
+        if temp_info is not None:
+            payload["temperature"] = temp_info
+        record_decide_metric(self.server, {
+            "type": qtype,
+            "labels": labels,
+            "probs": ordered_probs,
+            "confidence": payload.get("confidence"),
+            "latency_ms": latency_ms,
+            "backend": "fallback",
+            "model": getattr(self.server.engine, "model_name", "?"),
+        })
+        return 200, payload
+
     def do_GET(self) -> None:  # noqa: N802
+        t0 = self._begin_request()
+        try:
+            self._do_GET()
+        finally:
+            self._record_metrics(t0)
+
+    def _do_GET(self) -> None:
         if self.path in ("/", "/healthz"):
-            self._send_json(200, {"ok": True, "model": self.server.engine.model_name})
+            self._send_json(200, {
+                "ok": True,
+                "model": self.server.engine.model_name,
+                "backend": getattr(self.server, "engine_backend", "custom"),
+            })
+        elif self.path == "/openapi.json":
+            spec = getattr(self.server, "openapi_spec", None)
+            if isinstance(spec, dict):
+                self._send_json(200, spec)
+            else:
+                self._send_json(500, {"error": "openapi spec unavailable"})
+        elif self.path == "/v1/decide/info":
+            engine = self.server.engine
+            backend_name = getattr(self.server, "engine_backend", "custom")
+            self._send_json(200, {
+                "option_limit": decide_option_limit(engine, backend_name),
+                "kinds": ["noul", "choice", "score"],
+                "image_support": isinstance(engine, JevDecideBackend),
+                "backend": backend_name,
+                "model": getattr(engine, "model_name", "?"),
+                "temperatures": None,
+            })
+        elif self.path == "/metrics":
+            metrics = getattr(self.server, "metrics", None)
+            if metrics is None:
+                self._send_json(500, {"error": "metrics unavailable"})
+            else:
+                self._send_text(200, metrics.render_prometheus())
         else:
             self._send_json(404, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
-        t0 = time.perf_counter()
+        t0 = self._begin_request()
         status, payload, extra = 500, {"error": "internal"}, {}
         try:
-            if self.path == "/v1/systemone":
+            if not api_token_ok(self.headers.get("Authorization")):
+                # Opt-in shared token ($SYSTEMONE_API_TOKEN); unset = open.
+                status, payload = 401, {
+                    "error": "unauthorized: missing or wrong bearer token"
+                }
+            elif scoring_disabled() and self.path in (
+                "/v1/systemone/route", "/v1/systemone/rank-plans"
+            ):
+                # Kill switch: refuse routing; upstream consumers fail open.
+                status, payload = 503, {
+                    "error": "systemone routing disabled (SYSTEMONE_DISABLE=1)"
+                }
+            elif self.path == "/v1/systemone":
                 status, payload = self._handle_systemone()
                 extra = {"n_questions": len(payload.get("answers", {}))}
+            elif self.path == "/v1/decisions":
+                status, payload = self._handle_decisions()
+                extra = {"n_questions": len(payload.get("answers", {}))}
+            elif self.path == "/v1/decide":
+                status, payload = self._handle_decide_v1()
+                extra = {
+                    "decide_kind": payload.get("kind"),
+                    "decide_choice": payload.get("choice"),
+                }
             elif self.path == "/v1/systemone/route":
                 status, payload = self._handle_route()
                 route = payload.get("route", {})
@@ -767,11 +2159,27 @@ class ShimHandler(BaseHTTPRequestHandler):
                     "route_model": route.get("model_id"),
                     "route_confidence": route.get("confidence"),
                 }
+            elif self.path == "/v1/systemone/rank-plans":
+                status, payload = self._handle_rank_plans()
+                extra = {
+                    "n_plans": len(payload.get("ranking", [])),
+                    "top_plan": (payload.get("ranking") or [{}])[0].get("id"),
+                }
+            elif self.path == "/v1/systemone/decide":
+                status, payload = self._handle_decide()
+                extra = {
+                    "decide_type": payload.get("type"),
+                    "backend": payload.get("backend"),
+                }
             else:
                 status = 404
                 payload = {
-                    "error": "not found, POST /v1/systemone or /v1/systemone/route"
+                    "error": "not found, POST /v1/decisions, /v1/decide, "
+                             "/v1/systemone, /v1/systemone/route, "
+                             "/v1/systemone/rank-plans or /v1/systemone/decide"
                 }
+        except BodyTooLarge as e:
+            status, payload = 413, {"error": f"request too large: {e}"}
         except (ValueError, KeyError) as e:
             status, payload = 400, {"error": f"bad request: {e}"}
         except Exception as e:  # never leak internals beyond the class name
@@ -780,12 +2188,14 @@ class ShimHandler(BaseHTTPRequestHandler):
         if status == 200 and "latency_ms" not in payload:
             payload["latency_ms"] = latency_ms
         self._send_json(status, payload)
+        self._record_metrics(t0)
         log_decision(
             {
                 "endpoint": self.path,
                 "latency_ms": latency_ms,
                 "status": status,
                 "model": getattr(self.server.engine, "model_name", "?"),
+                "request_id": getattr(self, "_request_id", "-"),
                 **extra,
             }
         )
@@ -839,22 +2249,234 @@ def _win32_detach(argv: list[str]) -> bool:
         return False
 
 
+# -- baked-in engine selection (local GLiClass vs SGLang) --------------------
+
+ENGINE_ENV = "SYSTEMONE_ENGINE"
+ENGINE_CHOICES = ("auto", "local", "sglang", "jevk5", "onnx", "jev")
+
+
+def engine_backend_name(engine: Any) -> str:
+    """Short backend label for an engine instance: sglang | hybrid | local.
+
+    Anything else (injected stubs, test doubles) reports "custom". Used in
+    the /healthz payload and the serve banner so operators can see which
+    judge is actually answering.
+    """
+    if isinstance(engine, HybridBackend):
+        return "hybrid"
+    if isinstance(engine, JevDecideBackend):
+        return "jev"
+    if isinstance(engine, SGLangBackend):
+        return "sglang"
+    if isinstance(engine, JevK5ServerBackend):
+        return "jevk5"
+    if isinstance(engine, RerankBackend):
+        return "rerank"
+    if SystemOne is not None and isinstance(engine, SystemOne):
+        return "local"
+    if type(engine).__name__ == "SystemOne":
+        return "local"
+    return "custom"
+
+
+def create_engine(name: str | None = None) -> Any:
+    """Build the decision engine the shim serves.
+
+    Args:
+        name: "auto" (default) | "local" | "sglang" | "jevk5" | "onnx" | "jev".
+            Unset -> the SYSTEMONE_ENGINE env var, defaulting to "auto".
+
+    - auto: JEV when JEV_URL is set and healthy, else SGLang when
+      SGLANG_BASE_URL is set and healthy, else JevK5 when JEVK5_BASE_URL
+      is set and healthy, else the local GLiClass engine. Probes only run
+      for explicitly configured servers, so a default box never stalls at
+      startup. The JEV decision model wins when configured — it is the
+      flagship judge (calibrated System 1 + System 2 in one engine).
+    - local: the GLiClass engine. Needs torch/transformers/gliclass
+      (pip install 'systemone[local]').
+    - sglang: SGLangBackend. When the server is unreachable it fails open
+      to the local engine if one can be built, else raises SGLangError.
+    - jevk5: JevK5ServerBackend (jevk5-serve's /v1/systemone). Same
+      fail-open behavior as sglang.
+    - onnx: RerankBackend over an ONNX cross-encoder (default
+      Xenova/bge-reranker-base int8, override with RERANK_MODEL_ID /
+      RERANK_ONNX_FILE). Needs onnxruntime + tokenizers +
+      huggingface_hub. Never auto-selected (it downloads weights).
+    - jev: JevDecideBackend (a JEV decision model's /v1/decide, e.g.
+      serve_decide.py or a hosted Jev API). Same fail-open behavior as
+      sglang. Only this engine serves images natively.
+
+    Raises:
+        ValueError: unknown engine name.
+        SGLangError / JevK5Error: remote requested but unreachable and no
+            local fallback.
+        ImportError: local requested but the heavy deps are not installed.
+    """
+    from .jev_backend import JevError
+    from .jevk5_backend import JevK5Error
+    from .sglang_backend import SGLangError
+
+    sel = (name or os.environ.get(ENGINE_ENV) or "auto").strip().lower()
+    if sel not in ENGINE_CHOICES:
+        raise ValueError(
+            f"unknown engine {sel!r} (SYSTEMONE_ENGINE must be one of: "
+            f"{', '.join(ENGINE_CHOICES)})"
+        )
+
+    def _local() -> Any:
+        if SystemOne is None:
+            raise ImportError(
+                "the local GLiClass engine needs torch + transformers + "
+                "gliclass, which are not installed. Either install them "
+                "(pip install 'systemone[local]') or serve a remote engine "
+                "instead (SYSTEMONE_ENGINE=sglang|jevk5|jev with its base "
+                "URL set) or the ONNX judge (SYSTEMONE_ENGINE=onnx with "
+                "onnxruntime installed)."
+            )
+        return SystemOne(model_name=os.environ.get("SYSTEMONE_MODEL"))
+
+    def _remote(kind: str, build: Any, err_cls: Any, env_var: str) -> Any:
+        backend = build()
+        try:
+            healthy = backend.health()
+        except Exception:
+            healthy = False
+        if healthy:
+            return backend
+        if sel == kind:
+            if SystemOne is not None:
+                logging.warning(
+                    "%s server unreachable at %s; failing open to the "
+                    "local engine",
+                    kind, backend.base_url,
+                )
+                return _local()
+            raise err_cls(
+                f"could not reach the {kind} server and no local engine "
+                "is available",
+                hint=f"tried {backend.base_url} (set {env_var}); "
+                "slim install has no local fallback — pip install "
+                "'systemone[local]' to add one",
+            )
+        logging.warning(
+            "%s server unreachable at %s; failing open onward",
+            kind, backend.base_url,
+        )
+        return None
+
+    if sel == "local":
+        return _local()
+    if sel == "onnx":
+        try:
+            enc = OnnxCrossEncoder(
+                model_id=os.environ.get("RERANK_MODEL_ID") or "Xenova/bge-reranker-base",
+                filename=os.environ.get("RERANK_ONNX_FILE") or "onnx/model_int8.onnx",
+            )
+        except Exception as exc:
+            if SystemOne is not None:
+                logging.warning(
+                    "ONNX judge unavailable (%s); failing open to local", exc)
+                return _local()
+            raise
+        return RerankBackend(enc.score, model_name=enc.model_id + " [onnx]")
+    if sel == "jev" or (os.environ.get("JEV_URL") or "").strip():
+        found = _remote("jev", JevDecideBackend, JevError, "JEV_URL")
+        if found is not None:
+            return found
+    if sel == "sglang" or (os.environ.get("SGLANG_BASE_URL") or "").strip():
+        found = _remote("sglang", SGLangBackend, SGLangError, "SGLANG_BASE_URL")
+        if found is not None:
+            return found
+    if sel == "jevk5" or (os.environ.get("JEVK5_BASE_URL") or "").strip():
+        found = _remote("jevk5", JevK5ServerBackend, JevK5Error, "JEVK5_BASE_URL")
+        if found is not None:
+            return found
+    return _local()
+
+
 def serve(
     port: int = 8765,
-    engine: SystemOne | None = None,
+    engine: Any = None,
     registry: Dict[str, Dict[str, Any]] | None = None,
+    engine_name: str | None = None,
 ) -> ThreadingHTTPServer:
-    """Build (but do not block on) the shim server."""
-    engine = engine or SystemOne(model_name=os.environ.get("SYSTEMONE_MODEL"))
+    """Build (but do not block on) the shim server.
+
+    Loads calibration.json (temperature for the blended tier distribution;
+    absent -> serve raw, calibrated=false) and tool_registry.json. When the
+    bundled calibration.json also carries a per-answer-type temperature map,
+    it is attached to the engine so every decision endpoint serves each
+    question type at its own fitted temperature (decider's applied-per-type
+    semantics). Starts a daemon thread refreshing model availability from
+    the LM Studio inventory (fail-open; registry values stand when LM
+    Studio is unreachable).
+
+    Args:
+        engine: explicit engine instance (wins over engine_name; tests use
+            this to inject stubs).
+        engine_name: "auto" | "local" | "sglang" | "jevk5" | "onnx" | "jev"
+            (see create_engine); unset -> $SYSTEMONE_ENGINE, default "auto".
+    """
+    engine = engine or create_engine(engine_name)
     server = ThreadingHTTPServer(("127.0.0.1", port), ShimHandler)
     server.engine = engine  # type: ignore[attr-defined]
-    server.registry = registry if registry is not None else load_registry()  # type: ignore[attr-defined]
+    server.engine_backend = engine_backend_name(engine)  # type: ignore[attr-defined]
+    server.metrics = Metrics()  # type: ignore[attr-defined]
+    reg = registry if registry is not None else load_registry()
+    server.registry = reg  # type: ignore[attr-defined]
+    server.calibration = load_calibration(CALIBRATION_PATH)  # type: ignore[attr-defined]
+    server.tools = load_tool_registry(TOOL_REGISTRY_PATH)  # type: ignore[attr-defined]
+    # OpenAPI document served at GET /openapi.json (fail-open: a missing or
+    # invalid spec degrades to a 500 on that path only, never breaks serve()).
+    try:
+        with open(OPENAPI_PATH, "r", encoding="utf-8") as f:
+            server.openapi_spec = json.load(f)  # type: ignore[attr-defined]
+    except Exception:
+        server.openapi_spec = None  # type: ignore[attr-defined]
+    # Per-answer-type temperature map for the decision path (fail-open:
+    # absent or pooled-only calibration.json leaves the engine untouched).
+    server.type_calibration = None  # type: ignore[attr-defined]
+    try:
+        type_cal = load_type_calibration(CALIBRATION_PATH)
+        if type_cal is not None:
+            if hasattr(engine, "set_calibrator"):
+                engine.set_calibrator(type_cal)
+            server.type_calibration = type_cal  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    # Bounded ring of fallback-decision records for offline calibration
+    # and ECE/Brier/NLL metrics (see record_decide_metric /
+    # decide_metrics_summary).
+    server.decide_records = deque(maxlen=_DECIDE_RECORDS_MAX)  # type: ignore[attr-defined]
+    # One quick inventory probe at startup (fail-open), then background refresh.
+    try:
+        ids = fetch_lmstudio_models()
+        if ids is not None:
+            apply_inventory(reg, ids)
+    except Exception:
+        pass
+    try:
+        start_inventory_refresher(reg)
+    except Exception:
+        pass
     return server
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Local /v1/systemone shim server")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument(
+        "--engine",
+        choices=list(ENGINE_CHOICES),
+        default=None,
+        help=(
+            "decision engine to serve: auto (JEV, then SGLang, then "
+            "JevK5, then local), local (GLiClass), sglang, jevk5, onnx "
+            "(local ONNX cross-encoder judge), or jev (JEV decision "
+            "model). Remotes fail open to local when unreachable. "
+            "Default: $SYSTEMONE_ENGINE or auto."
+        ),
+    )
     parser.add_argument(
         "--daemonize",
         action="store_true",
@@ -875,10 +2497,11 @@ def main() -> None:
     if args.daemonize and _win32_detach(sys.argv[1:]):
         print("systemone shim detached; parent exiting")
         return
-    server = serve(args.port)
+    server = serve(args.port, engine_name=args.engine)
     print(
         f"systemone shim on http://127.0.0.1:{args.port}/v1/systemone "
-        f"and /v1/systemone/route (model {server.engine.model_name})"
+        f"and /v1/systemone/route (model {server.engine.model_name}, "
+        f"backend {server.engine_backend})"
     )
     server.serve_forever()
 

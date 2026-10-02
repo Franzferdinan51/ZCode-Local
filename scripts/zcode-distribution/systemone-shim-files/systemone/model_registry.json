@@ -1,24 +1,66 @@
 {
-  "_comment": "Tiered model registry for the SystemOne model router (POST /v1/systemone/route). The router uses a cheap local GLiClass decision engine (Jev-style) to pick the CHEAPEST tier sufficient for each task. Tier descriptions are written contrastively (what each tier FAILS at) because the zero-shot classifier discriminates on capability boundaries, not marketing copy. Tiers with model_id=null are not routable until configured. latency_ms_p50: fill from measured runs (the shim logs per-decision latency to logs/systemone-shim.log) so routing claims carry receipts. Models served by LM Studio on the Mac mini (http://100.68.208.113:1234/v1) unless noted.",
+  "_comment": "Tiered model registry for the SystemOne model router (POST /v1/systemone/route). The router uses a cheap local GLiClass decision engine (Jev-style) to pick the CHEAPEST tier sufficient for each task. Tier descriptions are written contrastively (what each tier FAILS at) because the zero-shot classifier discriminates on capability boundaries, not marketing copy. Tiers with model_id=null are not routable until configured. latency_ms_p50: fill from measured runs (the shim logs per-decision latency to logs/systemone-shim.log) so routing claims carry receipts. TOPOLOGY (2026-09-26): The Windows PC (Batman) is the primary LM Studio inference host (127.0.0.1:1234); the Mac mini reaches it via LM Link (Mac localhost:1234 forwards to the PC). Mac-local models are backups. Only one model is loaded at a time on the PC; currently the 9B (Xiaomi MiMo-V2.6-Distill-Qwen-9B) - the 35B was unloaded at his request. His loaded model is never evicted by SystemOne. minicpm5-2b (economy) is currently Mac-local only. Each tier's models[] feeds expected-utility ranking (ranked_models): quality = seeded expected task-success rate per tier mix (config, tune over time), cost = relative cost units (latency x size proxy), available = in the LM Studio inventory (refreshed at shim startup, SYSTEMONE_INVENTORY_TTL). Rankings are advisory only \u2014 SystemOne never loads or switches models.",
   "tiers": {
     "economy": {
       "cost": "cheapest local LLM; fastest responses",
       "description": "Handles ONLY trivial tasks: one-sentence summaries, simple factual Q&A, basic rewrites, classification, extraction. FAILS at reasoning, code, math, navigation, tool use, browser actions, or anything multi-step or agentic.",
       "latency_ms_p50": null,
-      "model_id": "minicpm5-2b"
+      "model_id": "minicpm5-2b",
+      "models": [
+        {
+          "available": true,
+          "cost": 0.3,
+          "latency_ms_p50": 400,
+          "model_id": "minicpm5-2b",
+          "quality": {
+            "balanced": 0.38,
+            "economy": 0.72,
+            "heavy": 0.15
+          },
+          "vram_gb": 2
+        }
+      ]
     },
     "balanced": {
       "cost": "mid local LLM; moderate latency",
       "description": "Handles everyday tasks: explanations, emails, brainstorming, simple scripts, planning, general chat. FAILS at hard reasoning, complex debugging, advanced math, large codebases.",
       "latency_ms_p50": null,
-      "model_id": "ornith-1.5-9b"
+      "model_id": "ornith-1.5-9b",
+      "models": [
+        {
+          "available": true,
+          "cost": 1.0,
+          "latency_ms_p50": 900,
+          "model_id": "ornith-1.5-9b",
+          "quality": {
+            "balanced": 0.75,
+            "economy": 0.8,
+            "heavy": 0.45
+          },
+          "vram_gb": 6
+        }
+      ]
     },
     "heavy": {
       "cost": "strongest local LLM; highest latency",
-      "description": "Handles HARD tasks: complex reasoning, code generation and debugging, multithreaded race conditions, advanced math, long-context analysis, agent planning, multi-step browser navigation and automation, MCP tool calls, high-stakes judgment. Ryan's preferred model.",
+      "description": "Handles HARD tasks: complex reasoning, code generation and debugging, multithreaded race conditions, advanced math, long-context analysis, agent planning, multi-step browser navigation and automation, MCP tool calls, high-stakes judgment. Routable when loaded.",
       "latency_ms_p50": null,
       "model_id": "ornith-1.5-35b-a3b",
-      "note": "LM Studio on the Mac mini. Only one model loaded at a time on the Windows PC - the Mac mini serves this fleet."
+      "models": [
+        {
+          "available": true,
+          "cost": 3.0,
+          "latency_ms_p50": 2500,
+          "model_id": "ornith-1.5-35b-a3b",
+          "quality": {
+            "balanced": 0.88,
+            "economy": 0.85,
+            "heavy": 0.82
+          },
+          "vram_gb": 24
+        }
+      ],
+      "note": "Served on the Windows PC (Batman) via LM Link - the Mac's localhost:1234 forwards to the PC's :1234. Only one model is loaded at a time on the PC (currently the 9B, Xiaomi MiMo-V2.6-Distill-Qwen-9B); the 35B was unloaded at his request. SystemOne never evicts a loaded model."
     }
   }
 }

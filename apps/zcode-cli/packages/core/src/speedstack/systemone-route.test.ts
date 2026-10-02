@@ -873,3 +873,77 @@ test("fetch appends a route decision record to the log path", async () => {
     process.env.ZCODE_SYSTEMONE_DECISION_LOG = "0";
   }
 });
+
+test("fetch sends cost_bias/tiers/registry and parses rationale/cost_bias", async () => {
+  let seenBody: Record<string, unknown> = {};
+  const payload = {
+    route: {
+      tier: "economy",
+      confidence: 0.9,
+      cost_bias: "economy",
+      rationale: "Task 'x' — 'economy' is sufficient",
+    },
+  };
+  const server = createServer((req, res) => {
+    let raw = "";
+    req.on("data", (chunk: Buffer) => {
+      raw += chunk.toString("utf8");
+    });
+    req.on("end", () => {
+      seenBody = JSON.parse(raw) as Record<string, unknown>;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(payload));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const decision = await fetchSystemOneRouteDecision("x", {
+      endpoint: `http://127.0.0.1:${address.port}/v1/systemone/route`,
+      timeoutMs: 2000,
+      costBias: "economy",
+      tiers: ["economy", "balanced"],
+      registry: { economy: { model_id: "m" } },
+    });
+    assert.ok(decision);
+    assert.equal(decision.rationale, "Task 'x' — 'economy' is sufficient");
+    assert.equal(decision.costBias, "economy");
+    assert.equal(seenBody["task"], "x");
+    assert.equal(seenBody["cost_bias"], "economy");
+    assert.deepEqual(seenBody["tiers"], ["economy", "balanced"]);
+    assert.deepEqual(seenBody["registry"], { economy: { model_id: "m" } });
+  } finally {
+    server.close();
+  }
+});
+
+test("fetch drops unknown cost_bias and empty tiers (shim would 400)", async () => {
+  let seenBody: Record<string, unknown> = {};
+  const server = createServer((req, res) => {
+    let raw = "";
+    req.on("data", (chunk: Buffer) => {
+      raw += chunk.toString("utf8");
+    });
+    req.on("end", () => {
+      seenBody = JSON.parse(raw) as Record<string, unknown>;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ route: { tier: "economy", confidence: 0.9 } }));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const decision = await fetchSystemOneRouteDecision("x", {
+      endpoint: `http://127.0.0.1:${address.port}/v1/systemone/route`,
+      timeoutMs: 2000,
+      costBias: "turbo",
+      tiers: [],
+    });
+    assert.ok(decision);
+    assert.deepEqual(Object.keys(seenBody), ["task"]);
+  } finally {
+    server.close();
+  }
+});

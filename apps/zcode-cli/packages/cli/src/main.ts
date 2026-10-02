@@ -24,10 +24,12 @@ async function main(): Promise<void> {
   // 真实 zcode CLI 进程里仍可能有少量路径直接读取 process.env。
   // 入口先清洗用户 shell 注入的 NODE_ENV、代理和证书变量；网络变量只封存给后续 Bash/tool 子进程恢复。
   applyCliRuntimeEnvSanitization(process.env);
-  // Zero-setup SystemOne routing: probe 127.0.0.1:8765 and auto-start the
-  // bundled shim when nothing answers. Fail-open; ZCODE_SYSTEMONE=0 skips
-  // this and all route lookups. Plugin-host subprocesses are skipped — the
-  // parent agent process already bootstrapped.
+  // Zero-setup SystemOne routing: probe $SYSTEMONE_SHIM_URL (default
+  // 127.0.0.1:8765) and auto-start the bundled shim (`systemone serve`,
+  // else `python -m systemone.shim`) when nothing answers locally.
+  // Fail-open; ZCODE_SYSTEMONE=0 skips this and all route lookups.
+  // Plugin-host subprocesses are skipped — the parent agent process
+  // already bootstrapped.
   if (
     shouldEnsureSystemOneShim(argv, {
       isPluginHost: isPluginHostInvocation(argv),

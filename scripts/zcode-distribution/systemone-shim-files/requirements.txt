@@ -1,14 +1,25 @@
 # Runtime requirements for the ZCode-bundled SystemOne shim
-# (release <root>/systemone). Install once per machine that should
-# auto-start the shim:
+# (release <root>/systemone — systemone 0.1.0, requires-python >= 3.10).
+# Install once per machine that should auto-start the shim:
 #
 #   pip install -r requirements.txt
 #
-# The GLiClass model (knowledgator/gliclass-edge-v3.0) is fetched from
-# Hugging Face automatically on the shim's first start and cached in
+# Base is numpy-only upstream (slim: remote-engine + client paths);
+# the `local` extra below enables the default `auto` engine's
+# torch/GLiClass stack (mirrors `systemone[local]` in the upstream
+# pyproject). The GLiClass checkpoint itself
+# (knowledgator/gliclass-edge-v3.0) is fetched from Hugging Face
+# automatically on the shim's first start and cached in
 # ~/.cache/huggingface (HF_HOME / TRANSFORMERS_CACHE honored).
-
-torch
-transformers
-gliclass
-numpy
+#
+# Base (matches upstream `dependencies`):
+numpy>=1.24
+#
+# Local engine extra (matches upstream `systemone[local]`: torch
+# resolves per platform from stock pip wheels — CUDA on Linux/Windows,
+# MPS-capable on macOS Apple Silicon; SYSTEMONE_DEVICE=cuda|mps|cpu|auto
+# overrides the auto-select):
+torch>=2.0
+transformers>=4.40
+huggingface_hub>=0.20
+gliclass @ git+https://github.com/Franzferdinan51/GLiClass

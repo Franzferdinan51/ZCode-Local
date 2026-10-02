@@ -25,7 +25,9 @@ import {
   parseCandidatePlans,
   parsePlanRanking,
   resolvePlanCandidateCount,
+  resolveSystemOneRankPlansEndpoint,
   selectRankedPlan,
+  SYSTEMONE_RANK_PLANS_ENDPOINT,
   type PlanCandidate,
   type PlanRanking,
 } from "./plan-ranking.ts";
@@ -406,5 +408,22 @@ test("selectRankedPlan reports decided-winner for decider rankings", () => {
   assert.equal(
     selectRankedPlan(CANDIDATES.slice(0, 2), legacyRanking)?.reason,
     "ranked-winner",
+  );
+});
+
+test("resolveSystemOneRankPlansEndpoint honors $SYSTEMONE_SHIM_URL", () => {
+  assert.equal(
+    resolveSystemOneRankPlansEndpoint({}),
+    "http://127.0.0.1:8765/v1/systemone/rank-plans",
+  );
+  assert.equal(
+    SYSTEMONE_RANK_PLANS_ENDPOINT,
+    "http://127.0.0.1:8765/v1/systemone/rank-plans",
+  );
+  assert.equal(
+    resolveSystemOneRankPlansEndpoint({
+      SYSTEMONE_SHIM_URL: "http://macmini:8765/",
+    }),
+    "http://macmini:8765/v1/systemone/rank-plans",
   );
 });

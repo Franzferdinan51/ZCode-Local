@@ -5,8 +5,8 @@
 // Copies the `systemone` Python package (shim.py + its local imports +
 // the model registry) from the SystemOne release checkout into
 // `<release>/systemone`, plus ZCode-specific docs. The CLI auto-starts it
-// (`python3.11 -m systemone.shim --port 8765`) when nothing answers on
-// 127.0.0.1:8765.
+// (`systemone serve --port 8765`, else `python3 -m systemone.shim`)
+// when nothing answers on 127.0.0.1:8765.
 //
 // Source resolution: ZCODE_SYSTEMONE_SRC env, else the vendored in-repo
 // copy (systemone-shim-files/systemone). A missing source is a warning,
@@ -25,15 +25,36 @@ const bundledDocsDir = join(scriptDir, "systemone-shim-files");
 // on a Mac-local checkout. ZCODE_SYSTEMONE_SRC still overrides for dev.
 const DEFAULT_SOURCE_DIR = join(bundledDocsDir, "systemone");
 
-// The shim's runtime closure: shim.py imports .api, api.py imports
-// .calibration. Everything else in the checkout (tune/distill/bench,
+// The shim's runtime closure (systemone 0.1.0): shim.py imports .patterns,
+// .api (guarded: absent on slim installs), the engine backends
+// (jev/jevk5/rerank/sglang), .scoring, .jeff1, .calibration, and .metrics;
+// __init__ additionally imports .loop; cli.py/client.py/jeff1_sidecar.py
+// back `systemone serve` (+ --with-jeff1). Data files ride alongside
+// (model registry, calibration, tool registry, tuning, openapi).
+// Everything else in the checkout (acp/mcp servers, tune/distill/bench,
 // examples, tests, logs) is dev tooling and stays out of the release.
 const SHIM_FILES = [
   "__init__.py",
   "api.py",
   "calibration.py",
+  "cli.py",
+  "client.py",
+  "jeff1.py",
+  "jeff1_sidecar.py",
+  "jev_backend.py",
+  "jevk5_backend.py",
+  "loop.py",
+  "metrics.py",
+  "patterns.py",
+  "rerank_backend.py",
+  "scoring.py",
+  "sglang_backend.py",
   "shim.py",
+  "calibration.json",
   "model_registry.json",
+  "openapi.json",
+  "tool_registry.json",
+  "tuning.json",
   "README.md",
 ];
 
@@ -49,9 +70,7 @@ export function resolveSystemOneSourceDir(env = process.env) {
  */
 export async function stageSystemOneShim(packageRoot, options = {}) {
   const env = options.env ?? process.env;
-  const sourceDir = resolve(
-    options.sourceDir ?? resolveSystemOneSourceDir(env),
-  );
+  const sourceDir = resolve(options.sourceDir ?? resolveSystemOneSourceDir(env));
   const sourceStat = await stat(sourceDir).catch(() => null);
   if (!sourceStat?.isDirectory()) {
     console.warn(
@@ -84,12 +103,10 @@ export async function stageSystemOneShim(packageRoot, options = {}) {
     bundledAt: new Date().toISOString(),
     source: sourceDir,
     files: [...SHIM_FILES, ...DOC_FILES],
-    entry: "python3.11 -m systemone.shim --port 8765 (cwd: release root)",
+    entry:
+      "systemone serve --port 8765 (or: python3.11 -m systemone.shim --port 8765; cwd: release root)",
   };
-  await writeFile(
-    join(destDir, ".zcode-bundle.json"),
-    `${JSON.stringify(manifest, null, 2)}\n`,
-  );
+  await writeFile(join(destDir, ".zcode-bundle.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   console.log(`[zcode] bundled SystemOne shim from ${sourceDir}`);
   return true;
 }

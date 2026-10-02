@@ -33,6 +33,13 @@ import {
   type SystemOneDecideAnswer,
 } from "./systemone-decide.js";
 
+// The shim-url module is itself import-free, so importing it keeps this
+// module runnable under plain `node --test` type-stripping.
+import {
+  DEFAULT_SYSTEMONE_SHIM_URL,
+  systemOneShimEndpoint,
+} from "./systemone-shim-url.js";
+
 /**
  * Explicit user pin: deterministic single-plan behavior. Any of
  * 1/true/yes/on forces one candidate and skips ranking entirely.
@@ -48,9 +55,22 @@ export const DEFAULT_PLAN_CANDIDATE_COUNT = 2;
 /** Sanity cap: never ask the planner for more candidates than this. */
 export const MAX_PLAN_CANDIDATE_COUNT = 8;
 
-/** Local SystemOne shim plan-ranking endpoint. */
+/** Local SystemOne shim plan-ranking endpoint. The shim base URL is
+ * resolved from $SYSTEMONE_SHIM_URL (see ./systemone-shim-url.js) —
+ * this constant is only the default; prefer
+ * resolveSystemOneRankPlansEndpoint() for the live value. */
 export const SYSTEMONE_RANK_PLANS_ENDPOINT =
-  "http://127.0.0.1:8765/v1/systemone/rank-plans";
+  `${DEFAULT_SYSTEMONE_SHIM_URL}/v1/systemone/rank-plans`;
+
+/**
+ * Resolve the rank-plans endpoint from $SYSTEMONE_SHIM_URL
+ * (see ./systemone-shim-url.js), defaulting to the localhost shim.
+ */
+export function resolveSystemOneRankPlansEndpoint(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return systemOneShimEndpoint("/v1/systemone/rank-plans", env);
+}
 
 /** Hard bound on the rank-plans lookup; batched, one engine call. */
 export const SYSTEMONE_RANK_PLANS_TIMEOUT_MS = 8_000;
@@ -316,7 +336,8 @@ export async function fetchSystemOnePlanRanking(
     if (env[SYSTEMONE_MASTER_KILL_SWITCH_ENV] === "0") return undefined;
     if (!task || !task.trim()) return undefined;
     if (!plans || plans.length < 2) return undefined;
-    const endpoint = options?.endpoint ?? SYSTEMONE_RANK_PLANS_ENDPOINT;
+    const endpoint =
+      options?.endpoint ?? resolveSystemOneRankPlansEndpoint(env);
     const timeoutMs = options?.timeoutMs ?? SYSTEMONE_RANK_PLANS_TIMEOUT_MS;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);

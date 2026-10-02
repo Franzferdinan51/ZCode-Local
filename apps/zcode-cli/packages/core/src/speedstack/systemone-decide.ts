@@ -111,7 +111,11 @@ export interface SystemOneDecideAnswer {
   /** Winning distribution (choice/noul: probabilities, score: levels). */
   readonly probabilities: Readonly<Record<string, number>>;
   readonly confidence: number;
-  /** Observability: server-reported latency and decision backend. */
+  /**
+   * Observability: server-reported latency and decision backend
+   * (`decider` when the decision sidecar answered, `fallback` when the
+   * shim answered locally — free-form passthrough, never gated).
+   */
   readonly latencyMs?: number | undefined;
   readonly backend?: string | undefined;
 }

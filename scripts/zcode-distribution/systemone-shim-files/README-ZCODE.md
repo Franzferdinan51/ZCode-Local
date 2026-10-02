@@ -2,12 +2,19 @@
 
 This directory is the `systemone` Python package bundled with the ZCode
 release so per-task model routing works with **zero manual setup**: on
-startup ZCode probes `http://127.0.0.1:8765/healthz` and, when nothing
-answers, starts this shim itself as a detached background process:
+startup ZCode probes `$SYSTEMONE_SHIM_URL/healthz` (default
+`http://127.0.0.1:8765`) and, when nothing answers, starts this shim
+itself as a detached background process:
 
 ```
-python3.11 -m systemone.shim --port 8765        # cwd: the ZCode release root
+systemone serve --port 8765 --engine auto      # preferred (needs `systemone` on PATH)
+python3.11 -m systemone.shim --port 8765       # fallback; cwd: the ZCode release root
 ```
+
+`--engine` accepts `auto|local|sglang|jevk5|onnx|jev` (default: the
+`SYSTEMONE_ENGINE` env var, else `auto`). Served endpoints: `GET
+/,/healthz,/openapi.json,/metrics,/v1/decide/info` and `POST
+/v1/systemone,/v1/decisions,/v1/decide,/v1/systemone/route,/v1/systemone/rank-plans,/v1/systemone/decide`.
 
 A shim already listening on :8765 (for example a manually managed one)
 is used as-is and never duplicated. If the shim can't be started, ZCode
@@ -31,9 +38,10 @@ never broken because the router is missing.
 
 ## What the shim needs
 
-- Python 3.11+ with `torch`, `transformers`, `gliclass`, `numpy`
-  (see `requirements.txt`). macOS ships with these via the release
-  builder's interpreter; on a fresh machine: `pip install -r requirements.txt`.
+- Python >= 3.10 with `numpy` (slim) plus `torch`, `transformers`,
+  `huggingface_hub`, `gliclass` for the default `auto`/`local` engine
+  (see `requirements.txt`). On a fresh machine:
+  `pip install -r requirements.txt`.
 - The GLiClass model `knowledgator/gliclass-edge-v3.0`, fetched from
   Hugging Face on first run and cached in `~/.cache/huggingface`
   (honors `HF_HOME` / `TRANSFORMERS_CACHE`). After the first download the
@@ -43,8 +51,10 @@ never broken because the router is missing.
 
 ZCode looks for `python3.11`, then `python3`, then `python` on `PATH`
 (`ZCODE_SYSTEMONE_PYTHON` overrides). The interpreter must be able to
-`import gliclass` — if it can't, ZCode logs one line and continues
-without routing (fail-open). To enable routing on Windows:
+`import systemone` (slim: `numpy` suffices for remote-engine modes; the
+default `auto` engine additionally needs the torch/GLiClass stack) — if
+it can't, ZCode logs one line and continues without routing (fail-open).
+To enable routing on Windows:
 
 ```
 py -3.11 -m pip install -r <release>\systemone\requirements.txt

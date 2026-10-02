@@ -9,7 +9,9 @@ import {
 import {
   buildRouteAgreement,
   buildRouteChoicePrompt,
+  ML_ROUTE_DEFAULT_ENDPOINTS,
   routeAnswerToScored,
+  SYSTEMONE_DECIDE_BACKENDS,
   SYSTEMONE_MAX_OPTIONS,
   SYSTEMONE_STATE_CHARS,
   validateRouteChoiceAnswer,
@@ -160,4 +162,10 @@ test("buildRouteAgreement compares ML and heuristic picks", () => {
     buildRouteAgreement({ providerId: "a", modelId: "x" }, answer, survivors, prompt),
     { agree: false, heuristicPick: "a/x", mlPick: "b/y", mlConfidence: 0.9 },
   );
+});
+
+test("shim contract: :8765 primary, jeff-1 passthrough, decider|fallback backends", () => {
+  assert.equal(ML_ROUTE_DEFAULT_ENDPOINTS["systemone"], "http://127.0.0.1:8765/v1/systemone");
+  assert.equal(ML_ROUTE_DEFAULT_ENDPOINTS["jeff-1"], "http://127.0.0.1:8079/v1/systemone");
+  assert.deepEqual([...SYSTEMONE_DECIDE_BACKENDS], ["decider", "fallback"]);
 });

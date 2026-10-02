@@ -138,6 +138,16 @@ export interface SystemOneRouteDecision {
    * them without re-fetching the route.
    */
   readonly tierScores?: Readonly<Record<string, number>>;
+  /**
+   * Human-readable routing rationale echoed by the shim (observability
+   * only; never consumed by policy). Absent on older shims.
+   */
+  readonly rationale?: string | undefined;
+  /**
+   * Cost bias the shim routed under (echo of the request's cost_bias,
+   * default "balanced"). Absent on older shims.
+   */
+  readonly costBias?: string | undefined;
 }
 
 /** One entry of the shim's ranked_tools surface (advisory keep-signal). */
@@ -171,26 +181,60 @@ export interface SecondOpinion {
   readonly rationale?: string | undefined;
 }
 
+/** Cost/capability bias the route endpoint accepts (default: balanced). */
+export type SystemOneCostBias = "economy" | "balanced" | "quality";
+
+const SYSTEMONE_COST_BIASES: readonly string[] = [
+  "economy",
+  "balanced",
+  "quality",
+];
+
 /**
- * POST {task} to the SystemOne route endpoint and return the parsed route
- * decision. Fail-open: any failure (shim down, timeout, non-200, malformed
- * body) returns undefined and never throws.
+ * POST {task, cost_bias?, tiers?, registry?} to the SystemOne route
+ * endpoint and return the parsed route decision. Fail-open: any failure
+ * (shim down, timeout, non-200, malformed body) returns undefined and
+ * never throws. Unknown cost-bias values are dropped (the shim would
+ * 400); empty tier lists and non-object registries are dropped too.
  */
 export async function fetchSystemOneRouteDecision(
   task: string,
-  options?: { endpoint?: string; timeoutMs?: number },
+  options?: {
+    endpoint?: string;
+    timeoutMs?: number;
+    costBias?: string;
+    tiers?: readonly string[];
+    registry?: Readonly<Record<string, unknown>>;
+  },
 ): Promise<SystemOneRouteDecision | undefined> {
   if (isSystemOneDisabled()) return undefined;
   const endpoint = options?.endpoint ?? resolveSystemOneRouteEndpoint();
   const timeoutMs = options?.timeoutMs ?? SYSTEMONE_ROUTE_TIMEOUT_MS;
   if (!task || !task.trim()) return undefined;
+  const body: Record<string, unknown> = { task };
+  const costBias = options?.costBias?.trim().toLowerCase();
+  if (costBias && SYSTEMONE_COST_BIASES.includes(costBias)) {
+    body["cost_bias"] = costBias;
+  }
+  const tiers = options?.tiers?.filter(
+    (tier): tier is string =>
+      typeof tier === "string" && tier.trim().length > 0,
+  );
+  if (tiers && tiers.length > 0) body["tiers"] = tiers;
+  if (
+    options?.registry &&
+    typeof options.registry === "object" &&
+    !Array.isArray(options.registry)
+  ) {
+    body["registry"] = options.registry;
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(endpoint, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ task }),
+      body: JSON.stringify(body),
       signal: controller.signal,
     });
     if (!response.ok) return undefined;
@@ -261,8 +305,22 @@ function parseRouteDecision(payload: unknown): SystemOneRouteDecision | undefine
     rankedModels?: RankedModel[];
     secondOpinion?: SecondOpinion;
     tierScores?: Readonly<Record<string, number>>;
+    rationale?: string;
+    costBias?: string;
   } = { tier, confidence };
   if (typeof record["effort"] === "string") decision.effort = record["effort"];
+  if (
+    typeof record["rationale"] === "string" &&
+    record["rationale"].length > 0
+  ) {
+    decision.rationale = record["rationale"];
+  }
+  if (
+    typeof record["cost_bias"] === "string" &&
+    record["cost_bias"].length > 0
+  ) {
+    decision.costBias = record["cost_bias"];
+  }
   if (record["uncertain"] === true) decision.uncertain = true;
   const rankedTools = record["ranked_tools"];
   if (Array.isArray(rankedTools)) {

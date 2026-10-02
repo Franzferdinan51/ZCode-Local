@@ -1,0 +1,496 @@
+{
+  "_comment": "Tool/MCP registry for SystemOne tool relevance ranking (ranked_tools). kind=tool: ZCode CLI built-in tools (grounded from apps/zcode-cli/packages/contracts/src/tools in the ZCode repo). kind=mcp: Ryan's live MCP servers (Mac mini inventory, Sep 2026). Descriptions are written contrastively (what each tool FAILS at) so the zero-shot relevance head discriminates on capability boundaries. This is config, not code: edit freely, no release needed beyond a shim restart.",
+  "tools": [
+    {
+      "capabilities": [
+        "files",
+        "code",
+        "search"
+      ],
+      "description": "Read file contents from the workspace. Plain text, code, configs. FAILS at web pages, images, PDFs (see read-pdf), and anything not on disk.",
+      "id": "read",
+      "kind": "tool",
+      "triggers": [
+        "read",
+        "file",
+        "log",
+        "config",
+        "code",
+        "view",
+        "show",
+        "contents"
+      ]
+    },
+    {
+      "capabilities": [
+        "files",
+        "code"
+      ],
+      "description": "Create new files or overwrite existing ones in the workspace. FAILS at partial edits (see edit) and at anything outside the workspace.",
+      "id": "write",
+      "kind": "tool",
+      "triggers": [
+        "write",
+        "create",
+        "new file",
+        "save",
+        "generate"
+      ]
+    },
+    {
+      "capabilities": [
+        "files",
+        "code",
+        "refactor"
+      ],
+      "description": "Surgical string replacement inside an existing file. FAILS at creating files from scratch and at large restructures (see apply-patch).",
+      "id": "edit",
+      "kind": "tool",
+      "triggers": [
+        "edit",
+        "modify",
+        "change",
+        "fix",
+        "update",
+        "replace",
+        "patch"
+      ]
+    },
+    {
+      "capabilities": [
+        "code",
+        "refactor"
+      ],
+      "description": "Apply multi-hunk patches and larger code restructures. FAILS at single small edits (see edit) and at non-code files.",
+      "id": "apply-patch",
+      "kind": "tool",
+      "triggers": [
+        "patch",
+        "refactor",
+        "restructure",
+        "multi-file"
+      ]
+    },
+    {
+      "capabilities": [
+        "shell",
+        "ops",
+        "code",
+        "search"
+      ],
+      "description": "Run shell commands: builds, tests, git, scripts, system inspection. FAILS at interactive programs and at anything needing a GUI.",
+      "id": "bash",
+      "kind": "tool",
+      "triggers": [
+        "run",
+        "execute",
+        "command",
+        "script",
+        "shell",
+        "terminal",
+        "test",
+        "build",
+        "git"
+      ]
+    },
+    {
+      "capabilities": [
+        "search",
+        "code",
+        "files"
+      ],
+      "description": "Search file contents by regex across the workspace. FAILS at semantic code search and at web content.",
+      "id": "grep",
+      "kind": "tool",
+      "triggers": [
+        "search",
+        "find",
+        "grep",
+        "pattern",
+        "regex",
+        "log",
+        "error"
+      ]
+    },
+    {
+      "capabilities": [
+        "search",
+        "files"
+      ],
+      "description": "Find files by name pattern (e.g. **/*.ts). FAILS at content search (see grep).",
+      "id": "glob",
+      "kind": "tool",
+      "triggers": [
+        "find",
+        "list",
+        "files",
+        "glob",
+        "pattern",
+        "directory"
+      ]
+    },
+    {
+      "capabilities": [
+        "web",
+        "search",
+        "research"
+      ],
+      "description": "Fetch a URL and extract its text content. FAILS at JavaScript-heavy pages, logins, and interactive sites (see browserclaw).",
+      "id": "webfetch",
+      "kind": "tool",
+      "triggers": [
+        "fetch",
+        "scrape",
+        "scraping",
+        "website",
+        "webpage",
+        "url",
+        "html",
+        "download page"
+      ]
+    },
+    {
+      "capabilities": [
+        "web",
+        "search",
+        "research"
+      ],
+      "description": "Web search by query, returns snippets and links. FAILS at deep research synthesis and at logged-in content.",
+      "id": "websearch",
+      "kind": "tool",
+      "triggers": [
+        "search",
+        "google",
+        "web",
+        "lookup",
+        "find info"
+      ]
+    },
+    {
+      "capabilities": [
+        "planning"
+      ],
+      "description": "Maintain a task plan with checkboxes across a multi-step job. FAILS at anything except plan bookkeeping.",
+      "id": "todowrite",
+      "kind": "tool",
+      "triggers": [
+        "plan",
+        "todo",
+        "task list",
+        "checklist",
+        "steps"
+      ]
+    },
+    {
+      "capabilities": [
+        "planning",
+        "delegation"
+      ],
+      "description": "Spawn a subagent for a self-contained piece of work. FAILS at quick single-step jobs (overhead) and at browser work.",
+      "id": "task",
+      "kind": "tool",
+      "triggers": [
+        "delegate",
+        "subagent",
+        "parallel",
+        "background"
+      ]
+    },
+    {
+      "capabilities": [
+        "delegation",
+        "planning"
+      ],
+      "description": "Launch a specialized agent profile with its own tools. FAILS at simple questions answerable inline.",
+      "id": "agent",
+      "kind": "tool",
+      "triggers": [
+        "agent",
+        "profile",
+        "specialist",
+        "delegate"
+      ]
+    },
+    {
+      "capabilities": [
+        "planning"
+      ],
+      "description": "Ask Ryan a clarifying question mid-task. FAILS when the answer is knowable without asking \u2014 asking is the failure mode.",
+      "id": "ask-user-question",
+      "kind": "tool",
+      "triggers": [
+        "ask",
+        "clarify",
+        "question",
+        "confirm"
+      ]
+    },
+    {
+      "capabilities": [
+        "research",
+        "browser",
+        "planning"
+      ],
+      "description": "Invoke a workspace skill playbook (repeatable browser/research workflows). FAILS at one-off tasks with no playbook.",
+      "id": "skill",
+      "kind": "tool",
+      "triggers": [
+        "skill",
+        "playbook",
+        "workflow",
+        "repeatable"
+      ]
+    },
+    {
+      "capabilities": [
+        "code",
+        "files"
+      ],
+      "description": "Edit Jupyter notebook cells. FAILS at plain source files (see edit).",
+      "id": "notebookedit",
+      "kind": "tool",
+      "triggers": [
+        "notebook",
+        "jupyter",
+        "cell"
+      ]
+    },
+    {
+      "capabilities": [
+        "files",
+        "research"
+      ],
+      "description": "Extract text from PDF documents. FAILS at scanned/image PDFs without OCR text.",
+      "id": "read-pdf",
+      "kind": "tool",
+      "triggers": [
+        "pdf",
+        "document",
+        "report",
+        "paper"
+      ]
+    },
+    {
+      "capabilities": [
+        "code",
+        "shell"
+      ],
+      "description": "Evaluate JavaScript snippets in a Node REPL for quick experiments. FAILS at persistent scripts (see bash).",
+      "id": "node-repl",
+      "kind": "tool",
+      "triggers": [
+        "javascript",
+        "node",
+        "js",
+        "snippet",
+        "repl"
+      ]
+    },
+    {
+      "capabilities": [
+        "browser",
+        "navigation",
+        "forms",
+        "research"
+      ],
+      "description": "Drive a real Chromium browser: navigate, click, fill forms, read pages, screenshots. Ryan's hardened backend on the Mac mini. FAILS on X's logged-in pages (renderer crashes \u2014 use Comet/Chrome there), and never touches his :9869 pinchtab session.",
+      "id": "browserclaw",
+      "kind": "mcp",
+      "triggers": [
+        "browser",
+        "click",
+        "screenshot",
+        "automate",
+        "form",
+        "navigate",
+        "webpage",
+        "checkout"
+      ]
+    },
+    {
+      "capabilities": [
+        "grow",
+        "sensors",
+        "data"
+      ],
+      "description": "Ryan's grow operation: 30 tools for cannabis plants, breeding log, stages, harvests, sensor data. FAILS at anything not grow-related.",
+      "id": "cannaai",
+      "kind": "mcp",
+      "triggers": [
+        "cannabis",
+        "grow",
+        "plant",
+        "tent",
+        "strain",
+        "harvest",
+        "sensor"
+      ]
+    },
+    {
+      "capabilities": [
+        "android",
+        "shell",
+        "sensors"
+      ],
+      "description": "Wireless ADB to Ryan's Pixel 6 (tent phone): shell commands, app interaction, sensor reads via the AC Infinity app. FAILS when the wireless link wedges (phone-side toggle needed).",
+      "id": "duckbot-adb",
+      "kind": "mcp",
+      "triggers": [
+        "phone",
+        "android",
+        "adb",
+        "pixel",
+        "mobile",
+        "app"
+      ]
+    },
+    {
+      "capabilities": [
+        "research",
+        "code",
+        "web"
+      ],
+      "description": "Grok Build CLI as a research helper: code and web research via xAI. FAILS at local-only work.",
+      "id": "grok-build-research",
+      "kind": "mcp",
+      "triggers": [
+        "research",
+        "grok",
+        "xai",
+        "investigate"
+      ]
+    },
+    {
+      "capabilities": [
+        "reasoning",
+        "planning",
+        "research"
+      ],
+      "description": "Multi-model council deliberation: several models debate and converge on hard judgment calls. FAILS at fast trivial questions (overkill).",
+      "id": "ai-council",
+      "kind": "mcp",
+      "triggers": [
+        "council",
+        "deliberate",
+        "debate",
+        "opinion",
+        "judgment"
+      ]
+    },
+    {
+      "capabilities": [
+        "chat",
+        "research",
+        "media"
+      ],
+      "description": "MiniMax API tools: chat, research, and media generation via MiniMax models. Ryan's MiniMax Coding Plan is canceled \u2014 this is API use, not the plan.",
+      "id": "minimax",
+      "kind": "mcp",
+      "triggers": [
+        "minimax",
+        "media",
+        "generate image",
+        "video"
+      ]
+    },
+    {
+      "capabilities": [
+        "weather",
+        "research"
+      ],
+      "description": "Six-source weather sweep for Huber Heights, OH: NWS alerts/forecast, SPC outlooks, FEMA declarations, news, social (local TV first), WHIO Storm Center 7. FAILS outside weather.",
+      "id": "weather",
+      "kind": "mcp",
+      "triggers": [
+        "weather",
+        "rain",
+        "forecast",
+        "temperature",
+        "storm",
+        "snow"
+      ]
+    },
+    {
+      "capabilities": [
+        "gaming",
+        "data"
+      ],
+      "description": "RuneScape game data: prices, guides, hiscores lookups. FAILS at anything outside the game.",
+      "id": "runescape",
+      "kind": "mcp",
+      "triggers": [
+        "runescape",
+        "game",
+        "gaming",
+        "ge",
+        "grand exchange"
+      ]
+    },
+    {
+      "capabilities": [
+        "ops",
+        "monitoring"
+      ],
+      "description": "Watchdog over Ryan's agent fleet: health checks, crash detection, process supervision. FAILS at general monitoring outside his machines.",
+      "id": "clawdwatch",
+      "kind": "mcp",
+      "triggers": [
+        "monitor",
+        "health",
+        "watchdog",
+        "fleet",
+        "process",
+        "crash"
+      ]
+    },
+    {
+      "capabilities": [
+        "desktop",
+        "browser",
+        "ops"
+      ],
+      "description": "macOS desktop control on the Mac mini: GUI clicks, keystrokes, window management. FAILS over plain SSH (needs a GUI session).",
+      "id": "desktop-control",
+      "kind": "mcp",
+      "triggers": [
+        "desktop",
+        "click",
+        "gui",
+        "mac",
+        "window",
+        "keystroke"
+      ]
+    },
+    {
+      "capabilities": [
+        "reasoning",
+        "planning"
+      ],
+      "description": "MOA advisor personas for structured business/life advice. FAILS at factual lookup.",
+      "id": "moa-advisors",
+      "kind": "mcp",
+      "triggers": [
+        "advice",
+        "business",
+        "advisor",
+        "strategy"
+      ]
+    },
+    {
+      "capabilities": [
+        "calendar",
+        "planning"
+      ],
+      "description": "Apple Calendar and Reminders on the Mac: read and create events, reminders. FAILS at Google Calendar (different skill).",
+      "id": "apple-events",
+      "kind": "mcp",
+      "triggers": [
+        "calendar",
+        "reminder",
+        "event",
+        "schedule",
+        "appointment"
+      ]
+    }
+  ]
+}

@@ -2,6 +2,12 @@
  * ML route orchestration: heuristic hard filters first, then one local-ML
  * re-rank round trip. The transport is injectable so unit tests never
  * spawn a sidecar; production passes `queryMlRouteBackend`.
+ *
+ * The re-rank round trip is route-choice only, served by the SystemOne
+ * shim on :8765 (`/v1/systemone` Jev dialect). Rank-plans and typed
+ * decide questions are separate shim endpoints on the same host
+ * (`/v1/systemone/{rank-plans,decide}`); the :8079 decision sidecar is
+ * decide-only and is never used as a route fallback.
  */
 
 import {

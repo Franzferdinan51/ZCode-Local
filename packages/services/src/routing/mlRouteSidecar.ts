@@ -1,10 +1,16 @@
 /**
  * Local ML route backends (Jeff-1 / SystemOne / Laya / custom).
  *
- * Two transports, one protocol (`SystemOneRouteRequest`):
+ * Two transports, one protocol (`SystemOneRouteRequest`, the Jev-style
+ * route-choice shape served by the SystemOne shim at
+ * `http://127.0.0.1:8765/v1/systemone`):
  * - HTTP: POST JSON to a loopback `/v1/systemone` endpoint. Covers the
- *   Jeff-1 `jev_clf_server` (127.0.0.1:8079) and the SystemOne `shim.py`
- *   (127.0.0.1:8765), which the user runs themselves.
+ *   SystemOne `shim.py` (127.0.0.1:8765, primary) and legacy Jeff-1
+ *   `jev_clf_server` instances (127.0.0.1:8079 passthrough), which the
+ *   user runs themselves. The modern :8079 decision sidecar is
+ *   decide-only (`/v1/jeff1/*`) — it never answers route-choice, so it
+ *   is never a route fallback; route/rank/decide all live on :8765
+ *   (`/v1/systemone/{route,rank-plans,decide}` plus the Jev `/v1/systemone`).
  * - stdio: spawn a persistent NDJSON bridge process. Covers Laya via the
  *   embedded `layaBridgeSource.ts` (`python3 <bridge>`), kept alive so the
  *   checkpoint loads once (~7-10s cold) and later calls cost milliseconds.
