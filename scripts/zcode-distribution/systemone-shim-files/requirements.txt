@@ -1,5 +1,5 @@
 # Runtime requirements for the ZCode-bundled SystemOne shim
-# (release <root>/systemone — systemone 0.1.0, requires-python >= 3.10).
+# (release <root>/systemone — systemone 0.2.0, requires-python >= 3.10).
 # Install once per machine that should auto-start the shim:
 #
 #   pip install -r requirements.txt

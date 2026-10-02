@@ -99,7 +99,7 @@ class RerankBackend:
         reported in ``_meta["media_dropped"]`` — the cross-encoder reads
         text pairs only.
         """
-        from .patterns import validate_choice, validate_distribution
+        from .patterns import validate_distribution
 
         t0 = time.perf_counter()
         answers: Dict[str, Any] = {}

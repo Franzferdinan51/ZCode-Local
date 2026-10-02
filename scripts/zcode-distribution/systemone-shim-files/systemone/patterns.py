@@ -48,6 +48,11 @@ MAX_QUESTIONS_PER_REQUEST = 64
 # Largest plan list per rank-plans request (one inference call per plan).
 MAX_PLANS_PER_REQUEST = 32
 
+# Largest item list per batch request (each item is a full judgments call).
+# Cohere's Classify takes 96 texts/request; 32 keeps worst-case latency
+# bounded for local GPU judges.
+MAX_BATCH_ITEMS_PER_REQUEST = 32
+
 
 class BodyTooLarge(Exception):
     """Request body exceeds MAX_BODY_BYTES (HTTP 413)."""
@@ -497,3 +502,39 @@ def build_decision_prompts(
         prompts.append(_prompt_row(state, k, text, labs))
         label_lists.append(labs)
     return prompts, label_lists
+
+
+# -- PII scrubbing (Presidio-style redaction, stdlib regex only) ------------
+#
+# Optional privacy pass (SYSTEMONE_SCRUB_PII=1): obvious identifiers are
+# replaced with typed tokens before the state reaches the judge, so
+# prompts, logs, and caches never hold the raw values. Deliberately
+# narrow (high precision, modest recall) — a safety net, not a DLP
+# suite. Returns (scrubbed_text, findings) where findings is a sorted
+# list of redaction kinds applied.
+
+_PII_PATTERNS: tuple = (
+    ("email", re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")),
+    ("phone", re.compile(
+        r"(?<!\d)(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)\d{3}[-.\s]?\d{4}(?!\d)")),
+    ("ssn", re.compile(r"(?<!\d)\d{3}-\d{2}-\d{4}(?!\d)")),
+    ("card", re.compile(r"(?<!\d)(?:\d[ -]?){13,19}(?!\d)")),
+    ("api_key", re.compile(
+        r"(?i)\b(?:api[_-]?key|secret|token|bearer)\b\s*[:=]\s*"
+        r"[A-Za-z0-9_.~+/-]{8,}")),
+    ("ipv4", re.compile(
+        r"(?<!\d)(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}"
+        r"(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?!\d)")),
+)
+
+
+def scrub_pii(text: str) -> tuple:
+    """Redact obvious identifiers; returns (scrubbed, sorted_kinds)."""
+    if not isinstance(text, str) or not text:
+        return text, []
+    kinds: list = []
+    for kind, rx in _PII_PATTERNS:
+        if rx.search(text):
+            kinds.append(kind)
+            text = rx.sub(f"[REDACTED_{kind.upper()}]", text)
+    return text, sorted(kinds)

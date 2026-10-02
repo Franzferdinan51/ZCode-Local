@@ -31,6 +31,17 @@ __all__ = [
     "evaluate_threshold",
     "summarize",
     "format_table",
+    # Eval-honesty batch (pulled from the eval/monitoring ecosystem):
+    "ndcg_at_k",
+    "reciprocal_rank",
+    "macro_f1",
+    "failure_auroc",
+    "brier_decomposition",
+    "reliability_curve",
+    "paired_bootstrap_ci",
+    "mcnemar",
+    "psi",
+    "estimated_accuracy",
 ]
 
 
@@ -277,6 +288,268 @@ _SUMMARY_COLS = [
     ("cov@5%", "cov5%", "{:.3f}"),
     ("cov@1%", "cov1%", "{:.3f}"),
 ]
+
+
+# -- rank + classification metrics (rank-plans / rerank / judge evals) ------
+
+
+def ndcg_at_k(ranked_relevance: Sequence[float], k: int = 10) -> float:
+    """nDCG@k for one ranked list (ToolRet/Clef-table convention).
+
+    Args:
+        ranked_relevance: relevance grades in the system's ranked order
+            (higher = more relevant; binary 0/1 also fine).
+        k: cutoff; grades past k are ignored.
+
+    Returns DCG@k / IDCG@k in [0, 1]; 1.0 when nothing is relevant
+    (no way to rank wrong) and 0.0 when k <= 0.
+    """
+    rel = [max(0.0, float(r)) for r in list(ranked_relevance)[: max(0, k)]]
+    if not rel or k <= 0:
+        return 0.0
+    dcg = sum(g / math.log2(i + 2) for i, g in enumerate(rel))
+    ideal = sum(g / math.log2(i + 2) for i, g in enumerate(sorted(rel, reverse=True)))
+    return dcg / ideal if ideal > 0 else 1.0
+
+
+def reciprocal_rank(ranked_relevance: Sequence[float]) -> float:
+    """1/rank of the first relevant item (rel > 0); 0.0 when none ranks."""
+    for i, r in enumerate(ranked_relevance):
+        if float(r) > 0:
+            return 1.0 / (i + 1)
+    return 0.0
+
+
+def macro_f1(
+    y_true: Sequence[int],
+    y_pred: Sequence[int],
+    labels: Sequence[int] | None = None,
+) -> float:
+    """Macro-averaged F1 over labels (BANKING77/Clef-table convention).
+
+    Labels with no true and no predicted members score 1.0 (nothing to
+    get wrong); labels with members on one side only score 0.0.
+    """
+    yt = np.asarray(list(y_true), dtype=int)
+    yp = np.asarray(list(y_pred), dtype=int)
+    if yt.shape != yp.shape or yt.ndim != 1 or len(yt) == 0:
+        raise ValueError("y_true and y_pred must be non-empty equal 1-D")
+    if labels is None:
+        labels = sorted(set(yt.tolist()) | set(yp.tolist()))
+    f1s = []
+    for lab in labels:
+        tp = int(((yt == lab) & (yp == lab)).sum())
+        fp = int(((yt != lab) & (yp == lab)).sum())
+        fn = int(((yt == lab) & (yp != lab)).sum())
+        if tp + fp + fn == 0:
+            f1s.append(1.0)
+        else:
+            f1s.append(2 * tp / (2 * tp + fp + fn) if tp else 0.0)
+    return float(sum(f1s) / len(f1s)) if f1s else 0.0
+
+
+def failure_auroc(y_true: Sequence[int], proba: Sequence[Sequence[float]]) -> float:
+    """AUROC of failure prediction from confidence (max class prob).
+
+    Treats each item as correct/incorrect and scores the ranking by
+    confidence: 1.0 means every correct item outranks every error (the
+    uncertainty gate can separate them), 0.5 is chance. Returns 0.5
+    when one side is empty (nothing to rank). Computed by the
+    Mann-Whitney U statistic — no sklearn needed.
+    """
+    y, P = _arrays(y_true, proba)
+    conf = P.max(axis=1)
+    ok = conf[(P.argmax(axis=1) == y)]
+    bad = conf[(P.argmax(axis=1) != y)]
+    if len(ok) == 0 or len(bad) == 0:
+        return 0.5
+    wins = sum(1.0 if a > b else 0.5 if a == b else 0.0 for a in ok for b in bad)
+    return float(wins / (len(ok) * len(bad)))
+
+
+def brier_decomposition(
+    y_true: Sequence[int],
+    proba: Sequence[Sequence[float]],
+    bins: int = 15,
+) -> Dict[str, float]:
+    """Murphy decomposition of the multiclass Brier score.
+
+    Buckets predicted probabilities per class (one-vs-rest) and returns
+    {"reliability", "resolution", "uncertainty", "brier"} with
+    brier = reliability - resolution + uncertainty (up to binning).
+    Reliability near 0 = calibrated; resolution near uncertainty =
+    sharp (confident and right). Raises ValueError on empty input.
+    """
+    y, P = _arrays(y_true, proba)
+    n, k = P.shape
+    edges = np.linspace(0.0, 1.0, bins + 1)
+    reliability = 0.0
+    resolution = 0.0
+    for c in range(P.shape[1]):
+        o = (y == c).astype(float)
+        rel_c = 0.0
+        res_c = 0.0
+        idx = np.clip(np.digitize(P[:, c], edges[1:-1]), 0, bins - 1)
+        for b in range(bins):
+            mask = idx == b
+            nb = int(mask.sum())
+            if nb == 0:
+                continue
+            fbar = float(P[mask, c].mean())
+            obar = float(o[mask].mean())
+            rel_c += (nb / n) * (fbar - obar) ** 2
+            res_c += (nb / n) * (obar - o.mean()) ** 2
+        reliability += rel_c
+        resolution += res_c
+    reliability /= k
+    resolution /= k
+    uncertainty = float(sum((y == c).mean() * (1.0 - (y == c).mean())
+                           for c in range(k)) / k)
+    return {
+        "reliability": float(reliability),
+        "resolution": float(resolution),
+        "uncertainty": float(uncertainty),
+        "brier": float(reliability - resolution + uncertainty),
+    }
+
+
+def reliability_curve(
+    y_true: Sequence[int],
+    proba: Sequence[Sequence[float]],
+    bins: int = 15,
+) -> List[Dict[str, float]]:
+    """Top-label reliability bins for plotting: count, mean confidence,
+    accuracy per bin (empty bins carry count 0 and NaN-free zeros)."""
+    y, P = _arrays(y_true, proba)
+    conf = P.max(axis=1)
+    correct = (P.argmax(axis=1) == y).astype(float)
+    edges = np.linspace(0.0, 1.0, bins + 1)
+    idx = np.clip(np.digitize(conf, edges[1:-1]), 0, bins - 1)
+    out = []
+    for b in range(bins):
+        mask = idx == b
+        nb = int(mask.sum())
+        out.append({
+            "bin_lo": float(edges[b]),
+            "bin_hi": float(edges[b + 1]),
+            "count": float(nb),
+            "mean_confidence": float(conf[mask].mean()) if nb else 0.0,
+            "accuracy": float(correct[mask].mean()) if nb else 0.0,
+        })
+    return out
+
+
+# -- honest A/B: is engine B really better? -------------------------------
+
+
+def paired_bootstrap_ci(
+    a_correct: Sequence[bool | int | float],
+    b_correct: Sequence[bool | int | float],
+    n_boot: int = 2000,
+    seed: int = 0,
+    level: float = 0.95,
+) -> Dict[str, float]:
+    """Bootstrap CI on the paired accuracy delta mean(B) - mean(A).
+
+    Resamples items with replacement (paired: same items for both
+    systems) and returns {"delta", "lo", "hi"} at `level` coverage.
+    A CI excluding 0 is a significant win for its side. Raises
+    ValueError on empty or mismatched inputs.
+    """
+    a = np.asarray([float(x) for x in a_correct], dtype=np.float64)
+    b = np.asarray([float(x) for x in b_correct], dtype=np.float64)
+    if a.shape != b.shape or a.ndim != 1 or len(a) == 0:
+        raise ValueError("need non-empty equal-length correctness lists")
+    if n_boot < 100:
+        raise ValueError("n_boot must be >= 100")
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, len(a), size=(n_boot, len(a)))
+    deltas = (b[idx] - a[idx]).mean(axis=1)
+    tail = (1.0 - level) / 2.0
+    return {
+        "delta": float(b.mean() - a.mean()),
+        "lo": float(np.quantile(deltas, tail)),
+        "hi": float(np.quantile(deltas, 1.0 - tail)),
+    }
+
+
+def mcnemar(
+    a_correct: Sequence[bool | int | float],
+    b_correct: Sequence[bool | int | float],
+) -> Dict[str, float]:
+    """McNemar's test on paired correct/incorrect outcomes.
+
+    Returns {"statistic", "p_value", "b", "c"} where b = A-wrong/B-right
+    and c = A-right/B-wrong. Exact binomial two-sided p-value when
+    b + c < 25, else chi-square(1) with Edwards' continuity correction
+    (survival via erfc — no scipy). p = 1.0 when b + c == 0.
+    """
+    a = [bool(x) for x in a_correct]
+    b = [bool(x) for x in b_correct]
+    if len(a) != len(b) or not a:
+        raise ValueError("need non-empty equal-length correctness lists")
+    n01 = sum(1 for x, y in zip(a, b) if not x and y)
+    n10 = sum(1 for x, y in zip(a, b) if x and not y)
+    n = n01 + n10
+    if n == 0:
+        return {"statistic": 0.0, "p_value": 1.0, "b": 0.0, "c": 0.0}
+    if n < 25:
+        k = max(n01, n10)
+        tail = sum(math.comb(n, i) for i in range(k, n + 1)) / 2**n
+        return {"statistic": float((n01 - n10) ** 2 / n),
+                "p_value": float(min(1.0, 2 * tail)),
+                "b": float(n01), "c": float(n10)}
+    stat = (abs(n01 - n10) - 1.0) ** 2 / n
+    return {"statistic": float(stat),
+            "p_value": float(math.erfc(math.sqrt(stat / 2.0))),
+            "b": float(n01), "c": float(n10)}
+
+
+# -- production monitoring without labels (NannyML/Evidently style) -------
+
+
+def psi(
+    expected: Sequence[float],
+    actual: Sequence[float],
+    bins: int = 10,
+    eps: float = 1e-4,
+) -> float:
+    """Population Stability Index between reference and live samples.
+
+    Quantile bins from `expected` (deduplicated); PSI = Σ (a-e)·ln(a/e).
+    Evidently's rule of thumb: < 0.1 no shift, 0.1–0.2 moderate,
+    > 0.2 significant. Use on confidences or predicted-label rates to
+    catch drift before labels arrive. Raises ValueError on empties.
+    """
+    exp = np.asarray([float(x) for x in expected], dtype=np.float64)
+    act = np.asarray([float(x) for x in actual], dtype=np.float64)
+    if len(exp) == 0 or len(act) == 0:
+        raise ValueError("need non-empty reference and live samples")
+    edges = np.unique(np.quantile(exp, np.linspace(0.0, 1.0, bins + 1)))
+    if len(edges) < 2:
+        return 0.0
+    idx_e = np.clip(np.digitize(exp, edges[1:-1]), 0, len(edges) - 2)
+    idx_a = np.clip(np.digitize(act, edges[1:-1]), 0, len(edges) - 2)
+    total = 0.0
+    for b in range(len(edges) - 1):
+        e = max(eps, float((idx_e == b).mean()))
+        aval = max(eps, float((idx_a == b).mean()))
+        total += (aval - e) * math.log(aval / e)
+    return float(total)
+
+
+def estimated_accuracy(proba: Sequence[Sequence[float]]) -> float:
+    """CBPE-style accuracy estimate: mean max class probability.
+
+    NannyML's confidence-based performance estimation for accuracy —
+    valid when probabilities are calibrated, structurally blind to
+    concept drift (confident-and-wrong looks good). Report alongside
+    PSI drift, never alone.
+    """
+    P = np.asarray([list(map(float, row)) for row in proba], dtype=np.float64)
+    if P.ndim != 2 or len(P) == 0:
+        raise ValueError("need a non-empty 2-D probability array")
+    return float(P.max(axis=1).mean())
 
 
 def format_table(rows: Sequence[Dict[str, float]]) -> str:

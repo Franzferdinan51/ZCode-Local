@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 
@@ -287,7 +287,7 @@ class RemoteEndpoint:
             except urllib.error.HTTPError as e:
                 if e.code == 422:
                     raise ValueError(
-                        f"endpoint refused the request (HTTP 422)") from None
+                        "endpoint refused the request (HTTP 422)") from None
                 if e.code not in (408, 429) and e.code < 500:
                     raise RuntimeError(
                         f"endpoint answered HTTP {e.code}; check auth/URL")

@@ -24,7 +24,7 @@ import {
 import type { ToolEntry, ToolHandler } from "../types.js";
 import { auxiliaryModelOptions } from "../../model/auxiliary-model-options.js";
 import { buildWebSearchOutput, formatWebSearchModelContent } from "./websearch-results.js";
-import { webSearchTraceFromContext } from "./websearch-support.js";
+import { fetchSearXngResult, webSearchTraceFromContext } from "./websearch-support.js";
 
 const WEBSEARCH_TOOL_NAME = "WebSearch";
 const PROVIDER_WEBSEARCH_TOOL_NAME = "web_search";
@@ -70,9 +70,13 @@ const webSearchHandler: ToolHandler<WebSearchInput, WebSearchOutput> = async (in
   }
 
   if (!model.properties.supportsNativeWebSearch) {
+    // Local-first fallback: models without native search (local Ollama /
+    // LM Studio builds) search through SearXNG instead of failing.
+    const searxng = await fetchSearXngResult(input.query);
+    if (searxng) return buildWebSearchOutput(input, searxng, startedAt);
     throw createCoreError(
       CoreErrorType.ConfigurationError,
-      "Current model does not support native WebSearch",
+      "Current model does not support native WebSearch and no local SearXNG answered",
       {
         context: { toolCallId: context.toolCallId, toolName: WEBSEARCH_TOOL_NAME },
         recoverable: true,

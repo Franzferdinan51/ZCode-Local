@@ -24,7 +24,7 @@ import re
 import threading
 import time
 import urllib.request
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence
 
 # -- tuning config -------------------------------------------------------------
 
@@ -461,11 +461,104 @@ def model_top_n() -> Optional[int]:
         return None
 
 
+# -- rank fusion (combine rankings from several judges) -------------------
+#
+# Pulled from the search/eval world: reciprocal rank fusion (Cormack et
+# al., SIGIR 2009 — the hybrid-search default), Borda voting, and the
+# extremized mean from forecast aggregation (which beats the plain mean
+# when judges share information). EnsembleBackend consumes these.
+
+
+def rrf_fuse(
+    rankings: Sequence[Sequence[str]], k: float = 60.0
+) -> Dict[str, float]:
+    """Reciprocal rank fusion: score(c) = Σ_rankings 1/(k + rank_c).
+
+    Each ranking lists candidate ids best-first; a candidate missing
+    from a ranking contributes 0 for it. k=60 is the literature
+    standard. Raises ValueError on empty input.
+    """
+    if not rankings:
+        raise ValueError("need at least one ranking to fuse")
+    scores: Dict[str, float] = {}
+    for ranking in rankings:
+        for rank, cand in enumerate(ranking):
+            scores[cand] = scores.get(cand, 0.0) + 1.0 / (k + rank + 1)
+    return scores
+
+
+def borda_fuse(rankings: Sequence[Sequence[str]]) -> Dict[str, float]:
+    """Borda count fusion: mean (len-1-rank) points per ranking.
+
+    First place earns len-1 points down to 0 for last; candidates
+    missing from a ranking earn 0 there. Averaged (not summed) so the
+    scale stays comparable as judges join. Raises ValueError on empty
+    input.
+    """
+    if not rankings:
+        raise ValueError("need at least one ranking to fuse")
+    totals: Dict[str, float] = {}
+    for ranking in rankings:
+        n = len(ranking)
+        for rank, cand in enumerate(ranking):
+            totals[cand] = totals.get(cand, 0.0) + max(0, n - 1 - rank)
+    return {c: v / len(rankings) for c, v in totals.items()}
+
+
+def mean_distributions(
+    distributions: Sequence[Dict[str, float]],
+) -> Dict[str, float]:
+    """Plain (linear-opinion-pool) mean of per-option distributions.
+
+    Missing options count as 0 in that judge; the mean renormalizes to
+    a simplex. Raises ValueError on empty input.
+    """
+    if not distributions:
+        raise ValueError("need at least one distribution to average")
+    keys: set = set()
+    for d in distributions:
+        keys.update(d)
+    mean = {c: sum(float(d.get(c, 0.0)) for d in distributions)
+            / len(distributions) for c in keys}
+    total = sum(mean.values())
+    if total <= 0:
+        n = len(mean)
+        return {c: 1.0 / n for c in mean} if n else {}
+    return {c: v / total for c, v in mean.items()}
+
+
+def extremized_average(
+    distributions: Sequence[Dict[str, float]],
+    strength: float = 1.0,
+) -> Dict[str, float]:
+    """Extremized mean: push the average away from uniform.
+
+    e_c ∝ p̄_c + strength·(p̄_c − 1/K), clipped at 0, renormalized.
+    strength=0 is the plain mean; strength=1 doubles deviations (the
+    usual starting point). Extremizing beats averaging when judges'
+    errors are correlated — the normal case for same-family models.
+    Raises ValueError on empty input or negative strength.
+    """
+    if strength < 0:
+        raise ValueError(f"strength must be >= 0, got {strength!r}")
+    mean = mean_distributions(distributions)
+    if not mean:
+        return {}
+    uniform = 1.0 / len(mean)
+    pushed = {c: max(0.0, p + strength * (p - uniform))
+              for c, p in mean.items()}
+    total = sum(pushed.values())
+    if total <= 0:
+        return {c: uniform for c in mean}
+    return {c: v / total for c, v in pushed.items()}
+
+
 def rank_models(
     registry: Dict[str, Any],
     cal_probs: Dict[str, float],
     lam: Optional[float] = None,
     topn: Optional[int] = None,
+    sort: str = "utility",
 ) -> List[Dict[str, Any]]:
     """Expected-utility rank: U(m) = Σ_t P(t)·quality(m,t) − λ·cost(m).
 
@@ -474,7 +567,15 @@ def rank_models(
     Advisory — never causes a model load or switch. When no cost lambda is
     configured (no tuning.json and no env), ranking degrades to pure
     expected quality (lambda = 0). topn=None returns all ranked models.
+
+    sort (OpenRouter-style per-request control): "utility" (default),
+    "quality" (expected quality desc), "cost" (cost asc), "latency"
+    (latency_ms_p50 asc; entries missing it sort last). Raises
+    ValueError on an unknown sort.
     """
+    if sort not in ("utility", "quality", "cost", "latency"):
+        raise ValueError(
+            f"unknown sort {sort!r}; want utility|quality|cost|latency")
     lam = cost_lambda() if lam is None else lam
     if lam is None:
         lam = 0.0
@@ -504,14 +605,27 @@ def rank_models(
                 for t, q in zip(tiers, qualities)
             )
             utility = exp_quality - lam * cost
+            try:
+                latency = float(m["latency_ms_p50"])
+            except (KeyError, TypeError, ValueError):
+                latency = None
             scored.append({
                 "model_id": model_id,
                 "tier": tier_name,
                 "utility": round(utility, 4),
                 "quality": round(exp_quality, 4),
                 "cost": cost,
+                "latency_ms_p50": latency,
             })
-    scored.sort(key=lambda s: s["utility"], reverse=True)
+    if sort == "quality":
+        scored.sort(key=lambda s: s["quality"], reverse=True)
+    elif sort == "cost":
+        scored.sort(key=lambda s: s["cost"])
+    elif sort == "latency":
+        scored.sort(key=lambda s: (s["latency_ms_p50"] is None,
+                                   s["latency_ms_p50"] or 0.0))
+    else:
+        scored.sort(key=lambda s: s["utility"], reverse=True)
     return scored[:topn] if topn is not None else scored
 
 

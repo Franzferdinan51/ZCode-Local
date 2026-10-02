@@ -50,6 +50,7 @@ SCORING_REQUIRED = BASE_REQUIRED + [
 TIER_ACCURACY_FLOOR = 0.80
 TIER_ACCURACY_WARN = 0.85
 ECE_CEILING = 0.10
+MIN_ECE_N = 30
 P50_CEILING_MS = 500.0
 P95_CEILING_MS = 2000.0
 REQUEST_TIMEOUT_S = 30
@@ -177,7 +178,6 @@ def main() -> int:
         for key in required:
             if key not in route:
                 schema_missing[key] = schema_missing.get(key, 0) + 1
-        probs = route.get("probabilities") or {}
         cal = route.get("calibrated_probabilities") if expect_scoring else None
         top_conf = route.get("confidence")
         if expect_scoring and cal:
@@ -223,7 +223,11 @@ def main() -> int:
         if args.mode == "full" and expect_scoring:
             ece = ece_10bin(y_true, y_conf)
             print(f"ECE (10-bin, calibrated top-1): {ece:.4f}")
-            if ece > ECE_CEILING:
+            if n < MIN_ECE_N:
+                # ECE on a handful of items (e.g. the 14-task red-team
+                # set) is noise, not signal: report it, don't gate on it.
+                print(f"ECE: not gated (n={n} < {MIN_ECE_N})")
+            elif ece > ECE_CEILING:
                 failures.append(f"ECE {ece:.4f} > {ECE_CEILING}")
         else:
             print("ECE: skipped (no calibrated confidences)")

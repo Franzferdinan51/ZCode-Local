@@ -48,6 +48,23 @@ from .patterns import (
     with_abstain,
 )
 
+__all__ = [
+    "SystemOne",
+    "default_device",
+    # Re-exported patterns names (tested contract; see
+    # test_api_reexports_patterns_when_heavy).
+    "ABSTAIN_LABEL",
+    "MAX_STATE_CHARS",
+    "MODEL_CANDIDATES",
+    "LatencyStats",
+    "StallGuard",
+    "SystemOneError",
+    "make_questions",
+    "validate_choice",
+    "with_abstain",
+]
+
+
 def default_device() -> str:
     """Best torch device for this machine: CUDA > Apple MPS > CPU.
 

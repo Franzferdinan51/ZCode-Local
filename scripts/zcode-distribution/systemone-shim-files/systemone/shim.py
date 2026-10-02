@@ -50,6 +50,9 @@ Endpoints:
                               re-run one choice question under n_perm
                               option orders; reports per-order answers,
                               argmax stability, and per-option spread
+    POST /v1/systemone/batch  judge up to 32 TypeSafe bodies in one call;
+                              per-item {"status", ...} results (Cohere
+                              Classify-style bulk judging)
     GET  /healthz, /           liveness
 
 Request body for /v1/systemone (TypeSafe dialect):
@@ -122,6 +125,7 @@ from logging.handlers import RotatingFileHandler
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .patterns import (
+    MAX_BATCH_ITEMS_PER_REQUEST,
     MAX_PLANS_PER_REQUEST,
     MAX_QUESTIONS_PER_REQUEST,
     MAX_STATE_CHARS,
@@ -129,6 +133,7 @@ from .patterns import (
     api_token_ok,
     check_body_length,
     date_facts,
+    scrub_pii,
     validate_choice,
 )
 
@@ -148,6 +153,17 @@ def maybe_date_facts(state_text: str) -> str:
         return state_text
     return f"{state_text}\n\ndate_facts: {facts}"
 
+
+def maybe_scrub_pii(state_text: str) -> tuple:
+    """Redact identifiers when SYSTEMONE_SCRUB_PII=1 -> (text, kinds).
+
+    Returns the input untouched (and no kinds) when the env var is off,
+    so the hot path pays one getenv per request and nothing else.
+    """
+    if os.environ.get("SYSTEMONE_SCRUB_PII") != "1":
+        return state_text, []
+    return scrub_pii(state_text)
+
 try:
     from .api import SystemOne
 except ImportError:  # slim install (no torch/gliclass): SGLang-engine or
@@ -165,9 +181,7 @@ from .sglang_backend import HybridBackend, SGLangBackend
 from .scoring import (
     apply_calibration,
     apply_inventory,
-    cost_lambda,
     disabled as scoring_disabled,
-    estimate_steps,
     fetch_lmstudio_models,
     load_calibration,
     load_tool_registry,
@@ -183,7 +197,6 @@ from .jeff1 import (
     blend_rankings,
     decide_via_jeff1,
     jeff1_enabled,
-    jeff1_url,
     rank_plans_via_jeff1,
     second_opinion as jeff1_second_opinion,
 )
@@ -552,12 +565,19 @@ def parse_route_body(
     return task.strip(), cost_bias, candidates
 
 
+_ROUTE_SORTS = ("utility", "quality", "cost", "latency")
+
+
 def route_decision(
     engine: Any,
     task: str,
     candidates: List[Dict[str, str]],
     cost_bias: str,
     scoring: Optional[Dict[str, Any]] = None,
+    sort: str = "utility",
+    fallbacks: int = 2,
+    explore: float = 0.0,
+    rng: Any = None,
 ) -> Dict[str, Any]:
     """Pick the cheapest sufficient tier for *task*.
 
@@ -584,7 +604,35 @@ def route_decision(
     Returns the {"model_id", "tier", "rationale", "confidence",
     "probabilities", "cost_bias", "deterministic_tier", "signals", "effort",
     "task_labels", ...} route dict.
+
+    OpenRouter/LiteLLM-style per-request controls (additive; defaults
+    preserve the legacy route exactly):
+
+    - sort: ranked_models order — "utility" (default), "quality",
+      "cost", or "latency".
+    - fallbacks: how many ranked model ids (excluding the winner) ride
+      along in route["fallbacks"] for ordered failover. Needs `scoring`
+      (the ranked list); 0 disables.
+    - explore: epsilon-greedy exploration rate in [0, 1] (default 0 =
+      pure exploitation). With probability `explore` the winner is
+      replaced by a uniform pick among the top-3 ranked models and
+      route["explored"] is set; effort still follows the routed tier,
+      not the exploration pick. `rng` (default the random module)
+      supplies .random()/.choice() — pass random.Random(seed) for
+      deterministic tests.
     """
+    if sort not in _ROUTE_SORTS:
+        raise ValueError(
+            f"unknown sort {sort!r}; want {'|'.join(_ROUTE_SORTS)}")
+    if isinstance(fallbacks, bool) or not isinstance(fallbacks, int):
+        raise ValueError(f"'fallbacks' must be an int, got {fallbacks!r}")
+    if not 0 <= fallbacks <= 8:
+        raise ValueError(f"'fallbacks' must be 0..8, got {fallbacks!r}")
+    if isinstance(explore, bool) or not isinstance(explore, (int, float)):
+        raise ValueError(f"'explore' must be a number, got {explore!r}")
+    if not 0.0 <= float(explore) <= 1.0:
+        raise ValueError(f"'explore' must be in [0, 1], got {explore!r}")
+    explore = float(explore)
     # The registry is a name->entry mapping with no guaranteed key order;
     # sort candidates cheapest-first so the index math below is sound.
     _order = {t: i for i, t in enumerate(_TIER_ORDER)}
@@ -678,7 +726,39 @@ def route_decision(
         "task_labels": task_labels_for(task),
     }
     if scoring is not None:
-        _apply_scoring(engine, task, route, blended, scoring)
+        _apply_scoring(engine, task, route, blended,
+                       {**scoring, "sort": sort})
+        ranked = route.get("ranked_models") or []
+        if fallbacks:
+            route["fallbacks"] = [
+                m["model_id"] for m in ranked
+                if isinstance(m, dict)
+                and m.get("model_id") != route["model_id"]
+            ][:fallbacks]
+        else:
+            route["fallbacks"] = []
+        route["explored"] = False
+        if explore > 0 and ranked:
+            r = rng if rng is not None else random
+            if r.random() < explore:
+                pool = [m for m in ranked[:3]
+                        if isinstance(m, dict) and m.get("model_id")]
+                if pool:
+                    pick = r.choice(pool)
+                    if pick["model_id"] != route["model_id"]:
+                        route["rationale"] += (
+                            f" Exploration roll (p={explore:.2f}) picked "
+                            f"'{pick['model_id']}' over '{route['model_id']}'."
+                        )
+                        route["model_id"] = pick["model_id"]
+                        if pick.get("tier"):
+                            route["tier"] = pick["tier"]
+                        route["explored"] = True
+                    else:
+                        route["rationale"] += (
+                            f" Exploration roll (p={explore:.2f}) kept "
+                            f"'{route['model_id']}'."
+                        )
     return route
 
 
@@ -742,7 +822,8 @@ def _apply_scoring(
         try:
             route["ranked_models"] = rank_models(
                 registry, cal["calibrated_probabilities"],
-                topn=model_top_n())
+                topn=model_top_n(),
+                sort=scoring.get("sort") or "utility")
         except Exception:
             route["ranked_models"] = []
 
@@ -891,17 +972,181 @@ class Metrics:
         return "\n".join(lines) + "\n"
 
 
+class DecisionCache:
+    """Thread-safe exact-match decision cache (FrugalGPT completion cache).
+
+    Keys are sha256 over the canonical request JSON plus the engine's
+    model name, so identical state+questions judge once per TTL window.
+    Bounded (LRU eviction) and TTL-expiring; disabled (ttl<=0 or
+    max_entries<=0) caches nothing. Hits are served without touching
+    the engine. Stats ride along for operators (hits/misses/size).
+    """
+
+    def __init__(self, ttl_seconds: float = 0.0, max_entries: int = 512) -> None:
+        self.ttl = float(ttl_seconds)
+        self.max_entries = int(max_entries)
+        self._lock = threading.Lock()
+        self._entries: Dict[str, tuple] = {}
+        self.hits = 0
+        self.misses = 0
+
+    @property
+    def enabled(self) -> bool:
+        return self.ttl > 0 and self.max_entries > 0
+
+    @staticmethod
+    def cache_key(model_name: str, canonical_body: str) -> str:
+        import hashlib
+
+        return hashlib.sha256(
+            f"{model_name}\n{canonical_body}".encode("utf-8")).hexdigest()
+
+    def get(self, key: str) -> Optional[Dict[str, Any]]:
+        if not self.enabled:
+            return None
+        now = time.monotonic()
+        with self._lock:
+            hit = self._entries.get(key)
+            if hit is None or hit[0] <= now:
+                self._entries.pop(key, None)
+                self.misses += 1
+                return None
+            self.hits += 1
+            self._entries[key] = self._entries.pop(key)  # MRU refresh
+            return json.loads(json.dumps(hit[1]))  # deep copy out
+
+    def put(self, key: str, payload: Dict[str, Any]) -> None:
+        if not self.enabled:
+            return
+        with self._lock:
+            while len(self._entries) >= self.max_entries:
+                self._entries.pop(next(iter(self._entries)))
+            self._entries[key] = (
+                time.monotonic() + self.ttl,
+                json.loads(json.dumps(payload)),  # deep copy in
+            )
+
+    def stats(self) -> Dict[str, Any]:
+        with self._lock:
+            return {"enabled": self.enabled, "hits": self.hits,
+                    "misses": self.misses, "size": len(self._entries)}
+
+
+def decision_cache_from_env() -> DecisionCache:
+    """Build the /v1/systemone decision cache from env (default off).
+
+    SYSTEMONE_CACHE_TTL seconds (<=0 disables), SYSTEMONE_CACHE_MAX
+    entries (default 512). Unparseable values fail open to disabled.
+    """
+    try:
+        ttl = float(os.environ.get("SYSTEMONE_CACHE_TTL") or "0")
+    except (TypeError, ValueError):
+        ttl = 0.0
+    try:
+        maximum = int(os.environ.get("SYSTEMONE_CACHE_MAX") or "512")
+    except (TypeError, ValueError):
+        maximum = 0
+    return DecisionCache(ttl_seconds=ttl, max_entries=maximum)
+
+
+_audit_lock = threading.Lock()
+_audit_seq = 0
+_audit_prev = "genesis"
+
+
+def reset_audit_chain() -> None:
+    """Reset the audit chain (tests only; production chains never reset)."""
+    global _audit_seq, _audit_prev
+    with _audit_lock:
+        _audit_seq = 0
+        _audit_prev = "genesis"
+
+
 def log_decision(record: Dict[str, Any]) -> None:
-    """Append one JSON decision record; never raises."""
+    """Append one JSON decision record; never raises.
+
+    With SYSTEMONE_AUDIT_CHAIN=1 each record also gains audit_seq /
+    audit_prev / audit_hash (sha256 over prev-hash + canonical record),
+    making the log tamper-evident: verify_audit_chain() replays it.
+    """
     try:
         logger = get_logger()
         if logger is None:
             return
         rec = {"ts": datetime.datetime.now(datetime.timezone.utc).isoformat()}
         rec.update(record)
+        if os.environ.get("SYSTEMONE_AUDIT_CHAIN") == "1":
+            import hashlib
+
+            global _audit_seq, _audit_prev
+            with _audit_lock:
+                _audit_seq += 1
+                seq = _audit_seq
+                prev = _audit_prev
+                body = json.dumps(rec, sort_keys=True, separators=(",", ":"))
+                digest = hashlib.sha256(
+                    f"{prev}\n{body}".encode("utf-8")).hexdigest()
+                _audit_prev = digest
+            rec["audit_seq"] = seq
+            rec["audit_prev"] = prev
+            rec["audit_hash"] = digest
         logger.info(json.dumps(rec))
     except Exception:
         pass  # logging must never break serving
+
+
+def verify_audit_chain(path: str) -> Dict[str, Any]:
+    """Replay a chained decision log; returns {"ok", "records", "error"}.
+
+    Checks sequence continuity, prev-hash linkage, and recomputed
+    digests over every line carrying audit_* fields. Lines without
+    audit fields are skipped (mixed chained/unchained logs verify the
+    chained subsequence). {"ok": False} names the first bad line.
+    """
+    import hashlib
+
+    checked = 0
+    prev: Optional[str] = None  # unknown until the first chained record
+    last_seq: Optional[int] = None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError as exc:
+        return {"ok": False, "records": 0, "error": f"unreadable: {exc}"}
+    for lineno, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            return {"ok": False, "records": checked,
+                    "error": f"line {lineno}: not JSON"}
+        if not isinstance(rec, dict) or "audit_hash" not in rec:
+            continue
+        if prev is None:
+            # A rotated log starts mid-chain: trust the file's first
+            # prev as the linkage root, enforce everything after it.
+            prev = rec.get("audit_prev")
+        elif rec.get("audit_prev") != prev:
+            return {"ok": False, "records": checked,
+                    "error": f"line {lineno}: prev-hash linkage broken"}
+        body_rec = {k: v for k, v in rec.items()
+                    if k not in ("audit_seq", "audit_prev", "audit_hash")}
+        body = json.dumps(body_rec, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(
+            f"{prev}\n{body}".encode("utf-8")).hexdigest()
+        if digest != rec.get("audit_hash"):
+            return {"ok": False, "records": checked,
+                    "error": f"line {lineno}: digest mismatch (tampered?)"}
+        seq = rec.get("audit_seq")
+        if isinstance(seq, int):
+            if last_seq is not None and seq != last_seq + 1:
+                return {"ok": False, "records": checked,
+                        "error": f"line {lineno}: sequence gap"}
+            last_seq = seq
+        prev = rec["audit_hash"]
+        checked += 1
+    return {"ok": True, "records": checked, "error": ""}
 
 
 # -- TypeSafe dialect translation (unchanged) --------------------------------
@@ -1849,10 +2094,35 @@ class ShimHandler(BaseHTTPRequestHandler):
 
     def _handle_systemone(self) -> tuple[int, Dict[str, Any]]:
         """POST /v1/systemone -> (status, payload)."""
-        body = self._read_body()
-        state_text, questions = translate_body(body)
-        images, videos = translate_media(body)
+        return 200, self._judge_one(self._read_body())
+
+    def _judge_one(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        """Judge one TypeSafe body -> response payload (batch shares this).
+
+        Exact-match cache (SYSTEMONE_CACHE_TTL>0) serves repeats without
+        touching the engine; PII scrubbing (SYSTEMONE_SCRUB_PII=1)
+        redacts identifiers before judging and reports the kinds.
+        """
         engine = self.server.engine
+        cache = getattr(self.server, "decision_cache", None)
+        cache_enabled = cache is not None and cache.enabled
+        key = None
+        if cache_enabled and cache is not None:
+            try:
+                canonical = json.dumps(body, sort_keys=True,
+                                       separators=(",", ":"), default=str)
+            except (TypeError, ValueError):
+                canonical = None
+            if canonical is not None:
+                key = DecisionCache.cache_key(engine.model_name, canonical)
+                hit = cache.get(key)
+                if hit is not None:
+                    hit["cached"] = True
+                    hit["latency_ms"] = 0.0  # no engine call happened
+                    return hit
+        state_text, questions = translate_body(body)
+        state_text, pii_kinds = maybe_scrub_pii(state_text)
+        images, videos = translate_media(body)
         kwargs: Dict[str, Any] = {}
         if images and _engine_supports(engine, "images"):
             kwargs["images"] = images
@@ -1891,7 +2161,47 @@ class ShimHandler(BaseHTTPRequestHandler):
                     f"{getattr(self.server, 'engine_backend', 'local')} "
                     "engine has no media path for them"
                 ]
-        return 200, payload
+        if pii_kinds:
+            payload["pii"] = {"redacted": True, "kinds": list(pii_kinds),
+                              "count": state_text.count("[REDACTED_")}
+        if cache_enabled:
+            payload["cached"] = False
+            if key is not None and cache is not None:
+                cache.put(key, payload)
+        return payload
+
+    def _handle_batch(self) -> tuple[int, Dict[str, Any]]:
+        """POST /v1/systemone/batch -> (status, payload).
+
+        Body: {"items": [TypeSafe bodies, 1..32]}. Each item judges like
+        POST /v1/systemone (cache included); per-item failures come back
+        as {"status", "error"} results instead of failing the batch.
+        """
+        body = self._read_body()
+        items = body.get("items")
+        if not isinstance(items, list) or not items:
+            raise ValueError("'items' must be a non-empty list")
+        if len(items) > MAX_BATCH_ITEMS_PER_REQUEST:
+            raise ValueError(
+                f"'items' exceeds the {MAX_BATCH_ITEMS_PER_REQUEST}-item cap")
+        results = []
+        for item in items:
+            if not isinstance(item, dict):
+                results.append({"status": 400,
+                                "error": "batch item must be a mapping"})
+                continue
+            try:
+                results.append({"status": 200, **self._judge_one(item)})
+            except (ValueError, KeyError) as exc:
+                results.append({"status": 400,
+                                "error": f"bad request: {exc}"})
+            except Exception as exc:  # never leak internals beyond the name
+                results.append(
+                    {"status": 500,
+                     "error": f"engine failure: {type(exc).__name__}"})
+        return 200, {"results": results,
+                     "model": self.server.engine.model_name,
+                     "n_items": len(items)}
 
     def _handle_decisions(self) -> tuple[int, Dict[str, Any]]:
         """POST /v1/decisions -> (status, payload).
@@ -1993,9 +2303,22 @@ class ShimHandler(BaseHTTPRequestHandler):
         """POST /v1/systemone/route -> (status, payload)."""
         body = self._read_body()
         task, cost_bias, candidates = parse_route_body(body, self.server.registry)
+        sort = body.get("sort", "utility")
+        if sort not in _ROUTE_SORTS:
+            raise ValueError(
+                f"unknown sort {sort!r}; want {'|'.join(_ROUTE_SORTS)}")
+        fallbacks = body.get("fallbacks", 2)
+        if (isinstance(fallbacks, bool) or not isinstance(fallbacks, int)
+                or not 0 <= fallbacks <= 8):
+            raise ValueError(f"'fallbacks' must be an int 0..8, got {fallbacks!r}")
+        explore = body.get("explore", 0.0)
+        if (isinstance(explore, bool) or not isinstance(explore, (int, float))
+                or not 0.0 <= float(explore) <= 1.0):
+            raise ValueError(f"'explore' must be in [0, 1], got {explore!r}")
         route = route_decision(
             self.server.engine, task, candidates, cost_bias,
             scoring=self._scoring_ctx(),
+            sort=sort, fallbacks=fallbacks, explore=float(explore),
         )
         return 200, {
             "route": route,
@@ -2299,13 +2622,18 @@ class ShimHandler(BaseHTTPRequestHandler):
                     "n_perm": payload.get("n_perm"),
                     "argmax_stable": payload.get("argmax_stable"),
                 }
+            elif self.path == "/v1/systemone/batch":
+                status, payload = self._handle_batch()
+                extra = {
+                    "n_items": payload.get("n_items"),
+                }
             else:
                 status = 404
                 payload = {
                     "error": "not found, POST /v1/decisions, /v1/decide, "
-                             "/v1/systemone, /v1/systemone/route, "
-                             "/v1/systemone/rank-plans, /v1/systemone/decide, "
-                             "or /v1/systemone/permute"
+                             "/v1/systemone, /v1/systemone/batch, "
+                             "/v1/systemone/route, /v1/systemone/rank-plans, "
+                             "/v1/systemone/decide, or /v1/systemone/permute"
                 }
         except BodyTooLarge as e:
             status, payload = 413, {"error": f"request too large: {e}"}
@@ -2580,6 +2908,9 @@ def serve(
     server.engine = engine  # type: ignore[attr-defined]
     server.engine_backend = engine_backend_name(engine)  # type: ignore[attr-defined]
     server.metrics = Metrics()  # type: ignore[attr-defined]
+    # Exact-match decision cache for /v1/systemone (+ batch items):
+    # SYSTEMONE_CACHE_TTL>0 enables, SYSTEMONE_CACHE_MAX bounds.
+    server.decision_cache = decision_cache_from_env()  # type: ignore[attr-defined]
     reg = registry if registry is not None else load_registry()
     server.registry = reg  # type: ignore[attr-defined]
     server.calibration = load_calibration(CALIBRATION_PATH)  # type: ignore[attr-defined]

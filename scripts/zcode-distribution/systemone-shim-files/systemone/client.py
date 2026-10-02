@@ -172,6 +172,20 @@ class SystemOneClient:
              "n_perm": n_perm, "seed": seed},
         )
 
+    def batch(
+        self,
+        items: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """POST /v1/systemone/batch — judge many TypeSafe bodies at once.
+
+        items: [{state, questions, ...}] in /v1/systemone shape (1..32).
+        Returns {"results": [{"status": 200, "answers", ...} |
+        {"status": 4xx/5xx, "error": ...}], "model", "n_items"}.
+        """
+        return self._request(
+            "POST", "/v1/systemone/batch", {"items": items}
+        )
+
     def decisions(
         self,
         input: Any,

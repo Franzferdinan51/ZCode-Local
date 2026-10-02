@@ -352,64 +352,63 @@ export interface EffortBehaviorPolicy {
 }
 
 /**
- * The behavior table. Step/call defaults are the RAISED caps per Ryan's
- * tuning directive: comfortably above the too-tight demo values (balanced
- * 20/40 caused 1/6 cap hits on the eval battery), while still bounding
- * genuine runaways. Tunable without a release via the env overrides above
- * (steps/calls) and the package-1 ZCODE_BUDGET_* surface.
+ * The behavior table. Step/call defaults are roomy on purpose: agentic
+ * coding loops burn a step per tool round-trip, so tight budgets abort
+ * long tasks before they converge. Tunable without a release via the env
+ * overrides above (steps/calls) and the package-1 ZCODE_BUDGET_* surface.
  */
 const EFFORT_BEHAVIOR_POLICY_TABLE: Record<EffortTier, EffortBehaviorPolicy> = {
   low: {
     tier: "low",
-    maxSteps: 25,
-    maxToolCalls: 60,
+    maxSteps: 60,
+    maxToolCalls: 150,
     subagents: "never",
-    subagentMaxTurns: 2,
-    readBreadth: 3,
+    subagentMaxTurns: 8,
+    readBreadth: 5,
     verificationPasses: 0,
     compactionAggressiveness: 1.0,
     planThenExecuteEligible: false,
   },
   medium: {
     tier: "medium",
-    maxSteps: 40,
-    maxToolCalls: 100,
+    maxSteps: 120,
+    maxToolCalls: 300,
     subagents: "conservative",
-    subagentMaxTurns: 4,
-    readBreadth: 6,
+    subagentMaxTurns: 16,
+    readBreadth: 10,
     verificationPasses: 0,
     compactionAggressiveness: 1.0,
     planThenExecuteEligible: false,
   },
   high: {
     tier: "high",
-    maxSteps: 60,
-    maxToolCalls: 150,
+    maxSteps: 250,
+    maxToolCalls: 600,
     subagents: "conservative",
-    subagentMaxTurns: 6,
-    readBreadth: 10,
+    subagentMaxTurns: 32,
+    readBreadth: 15,
     verificationPasses: 0,
     compactionAggressiveness: 1.0,
     planThenExecuteEligible: false,
   },
   xhigh: {
     tier: "xhigh",
-    maxSteps: 90,
-    maxToolCalls: 250,
+    maxSteps: 500,
+    maxToolCalls: 1200,
     subagents: "parallel",
-    subagentMaxTurns: 8,
-    readBreadth: 15,
+    subagentMaxTurns: 48,
+    readBreadth: 25,
     verificationPasses: 1,
     compactionAggressiveness: 0.9,
     planThenExecuteEligible: true,
   },
   ultra: {
     tier: "ultra",
-    maxSteps: 120,
-    maxToolCalls: 400,
+    maxSteps: 1000,
+    maxToolCalls: 2500,
     subagents: "parallel",
-    subagentMaxTurns: 12,
-    readBreadth: 25,
+    subagentMaxTurns: 64,
+    readBreadth: 40,
     verificationPasses: 1,
     compactionAggressiveness: 0.85,
     planThenExecuteEligible: true,

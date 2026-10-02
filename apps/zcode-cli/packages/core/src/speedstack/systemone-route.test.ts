@@ -947,3 +947,105 @@ test("fetch drops unknown cost_bias and empty tiers (shim would 400)", async () 
     server.close();
   }
 });
+
+test("fetch sends sort/fallbacks/explore and parses fallbacks/explored", async () => {
+  const payload = {
+    route: {
+      tier: "balanced",
+      confidence: 0.7,
+      model_id: "m-winner",
+      fallbacks: ["m-second", "m-third"],
+      explored: true,
+    },
+  };
+  let seenBody: Record<string, unknown> = {};
+  const server = createServer((req, res) => {
+    let raw = "";
+    req.on("data", (chunk) => (raw += chunk));
+    req.on("end", () => {
+      seenBody = JSON.parse(raw) as Record<string, unknown>;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(payload));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const decision = await fetchSystemOneRouteDecision("route this", {
+      endpoint: `http://127.0.0.1:${address.port}/v1/systemone/route`,
+      timeoutMs: 2000,
+      sort: "latency",
+      fallbacks: 2,
+      explore: 0.1,
+    });
+    assert.ok(decision, "expected a parsed decision");
+    assert.equal(seenBody["sort"], "latency");
+    assert.equal(seenBody["fallbacks"], 2);
+    assert.equal(seenBody["explore"], 0.1);
+    assert.deepEqual(decision.fallbacks, ["m-second", "m-third"]);
+    assert.equal(decision.explored, true);
+  } finally {
+    server.close();
+  }
+});
+
+test("fetch drops unknown sort and out-of-range fallbacks/explore", async () => {
+  let seenBody: Record<string, unknown> = {};
+  const server = createServer((req, res) => {
+    let raw = "";
+    req.on("data", (chunk) => (raw += chunk));
+    req.on("end", () => {
+      seenBody = JSON.parse(raw) as Record<string, unknown>;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ route: { tier: "economy", confidence: 0.9 } }));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const decision = await fetchSystemOneRouteDecision("x", {
+      endpoint: `http://127.0.0.1:${address.port}/v1/systemone/route`,
+      timeoutMs: 2000,
+      sort: "vibes",
+      fallbacks: 99,
+      explore: 1.5,
+    });
+    assert.ok(decision);
+    assert.deepEqual(Object.keys(seenBody), ["task"]);
+    assert.equal(decision.fallbacks, undefined);
+    assert.equal(decision.explored, undefined);
+  } finally {
+    server.close();
+  }
+});
+
+test("fetch drops malformed fallbacks but keeps the decision", async () => {
+  const payload = {
+    route: {
+      tier: "heavy",
+      confidence: 0.8,
+      fallbacks: ["m-ok", 42, "", null],
+      explored: "yes",
+    },
+  };
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(payload));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const decision = await fetchSystemOneRouteDecision("x", {
+      endpoint: `http://127.0.0.1:${address.port}/v1/systemone/route`,
+      timeoutMs: 2000,
+    });
+    assert.ok(decision);
+    assert.deepEqual(decision.fallbacks, ["m-ok"]);
+    assert.equal(decision.explored, undefined);
+  } finally {
+    server.close();
+  }
+});

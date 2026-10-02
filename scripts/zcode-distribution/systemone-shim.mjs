@@ -25,7 +25,7 @@ const bundledDocsDir = join(scriptDir, "systemone-shim-files");
 // on a Mac-local checkout. ZCODE_SYSTEMONE_SRC still overrides for dev.
 const DEFAULT_SOURCE_DIR = join(bundledDocsDir, "systemone");
 
-// The shim's runtime closure (systemone 0.1.0): shim.py imports .patterns,
+// The shim's runtime closure (systemone 0.2.0): shim.py imports .patterns,
 // .api (guarded: absent on slim installs), the engine backends
 // (jev/jevk5/kev/rerank/sglang), .scoring, .jeff1, .calibration, and
 // .metrics; __init__ additionally imports .loop and .rotation;

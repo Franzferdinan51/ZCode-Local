@@ -148,6 +148,20 @@ export interface SystemOneRouteDecision {
    * default "balanced"). Absent on older shims.
    */
   readonly costBias?: string | undefined;
+  /**
+   * Ordered failover model ids (shim 0.2.0+, wire name `fallbacks`):
+   * ranked-model ids after the winner, best first. Consume in order
+   * when the routed model is unavailable. Absent/empty on older shims
+   * or when the shim served without a scoring context.
+   */
+  readonly fallbacks?: readonly string[] | undefined;
+  /**
+   * True when the shim's epsilon-greedy exploration roll overrode the
+   * winner (shim 0.2.0+, wire name `explored`). Only possible when the
+   * request set explore > 0. Absent on older shims — "not present",
+   * never an error.
+   */
+  readonly explored?: boolean | undefined;
 }
 
 /** One entry of the shim's ranked_tools surface (advisory keep-signal). */
@@ -190,12 +204,26 @@ const SYSTEMONE_COST_BIASES: readonly string[] = [
   "quality",
 ];
 
+/** Ranked-models order the route endpoint accepts (default: utility). */
+export type SystemOneRouteSort = "utility" | "quality" | "cost" | "latency";
+
+const SYSTEMONE_ROUTE_SORTS: readonly string[] = [
+  "utility",
+  "quality",
+  "cost",
+  "latency",
+];
+
+/** The shim rejects fallbacks counts outside 0..8 (400). */
+export const SYSTEMONE_ROUTE_FALLBACKS_MAX = 8;
+
 /**
- * POST {task, cost_bias?, tiers?, registry?} to the SystemOne route
- * endpoint and return the parsed route decision. Fail-open: any failure
- * (shim down, timeout, non-200, malformed body) returns undefined and
- * never throws. Unknown cost-bias values are dropped (the shim would
- * 400); empty tier lists and non-object registries are dropped too.
+ * POST {task, cost_bias?, tiers?, registry?, sort?, fallbacks?, explore?}
+ * to the SystemOne route endpoint and return the parsed route decision.
+ * Fail-open: any failure (shim down, timeout, non-200, malformed body)
+ * returns undefined and never throws. Unknown cost-bias/sort values are
+ * dropped (the shim would 400); empty tier lists, non-object
+ * registries, and out-of-range fallbacks/explore values are dropped too.
  */
 export async function fetchSystemOneRouteDecision(
   task: string,
@@ -205,6 +233,22 @@ export async function fetchSystemOneRouteDecision(
     costBias?: string;
     tiers?: readonly string[];
     registry?: Readonly<Record<string, unknown>>;
+    /**
+     * Ranked-models order (utility|quality|cost|latency). Unknown values
+     * are dropped — the shim would 400.
+     */
+    sort?: string;
+    /**
+     * How many failover model ids ride along in `fallbacks` (0..8,
+     * shim default 2). Out-of-range values are dropped.
+     */
+    fallbacks?: number;
+    /**
+     * Epsilon-greedy exploration rate in [0, 1] (default 0 = pure
+     * exploitation). Out-of-range values are dropped. Prefer the eval
+     * harness for exploration; production callers leave this unset.
+     */
+    explore?: number;
   },
 ): Promise<SystemOneRouteDecision | undefined> {
   if (isSystemOneDisabled()) return undefined;
@@ -215,6 +259,28 @@ export async function fetchSystemOneRouteDecision(
   const costBias = options?.costBias?.trim().toLowerCase();
   if (costBias && SYSTEMONE_COST_BIASES.includes(costBias)) {
     body["cost_bias"] = costBias;
+  }
+  const sort = options?.sort?.trim().toLowerCase();
+  if (sort && SYSTEMONE_ROUTE_SORTS.includes(sort)) {
+    body["sort"] = sort;
+  }
+  const fallbacks = options?.fallbacks;
+  if (
+    typeof fallbacks === "number" &&
+    Number.isInteger(fallbacks) &&
+    fallbacks >= 0 &&
+    fallbacks <= SYSTEMONE_ROUTE_FALLBACKS_MAX
+  ) {
+    body["fallbacks"] = fallbacks;
+  }
+  const explore = options?.explore;
+  if (
+    typeof explore === "number" &&
+    Number.isFinite(explore) &&
+    explore >= 0 &&
+    explore <= 1
+  ) {
+    body["explore"] = explore;
   }
   const tiers = options?.tiers?.filter(
     (tier): tier is string =>
@@ -307,6 +373,8 @@ function parseRouteDecision(payload: unknown): SystemOneRouteDecision | undefine
     tierScores?: Readonly<Record<string, number>>;
     rationale?: string;
     costBias?: string;
+    fallbacks?: readonly string[];
+    explored?: boolean;
   } = { tier, confidence };
   if (typeof record["effort"] === "string") decision.effort = record["effort"];
   if (
@@ -322,6 +390,13 @@ function parseRouteDecision(payload: unknown): SystemOneRouteDecision | undefine
     decision.costBias = record["cost_bias"];
   }
   if (record["uncertain"] === true) decision.uncertain = true;
+  if (record["explored"] === true) decision.explored = true;
+  if (Array.isArray(record["fallbacks"])) {
+    const fallbacks = (record["fallbacks"] as unknown[]).filter(
+      (id): id is string => typeof id === "string" && id.trim().length > 0,
+    );
+    if (fallbacks.length > 0) decision.fallbacks = fallbacks;
+  }
   const rankedTools = record["ranked_tools"];
   if (Array.isArray(rankedTools)) {
     const parsed: RankedTool[] = [];

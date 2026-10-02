@@ -34,7 +34,7 @@ from .client import ShimError, SystemOneClient, default_shim_url
 try:
     from . import __version__ as _pkg_version
 except Exception:  # pragma: no cover - import fallback
-    _pkg_version = "0.1.0"
+    _pkg_version = "0.2.0"
 
 AGENT_NAME = "systemone"
 AGENT_TITLE = "SystemOne"

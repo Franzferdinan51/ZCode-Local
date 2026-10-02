@@ -36,7 +36,10 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List
+
+if TYPE_CHECKING:
+    from .api import SystemOne
 
 from mcp.server.fastmcp import FastMCP
 

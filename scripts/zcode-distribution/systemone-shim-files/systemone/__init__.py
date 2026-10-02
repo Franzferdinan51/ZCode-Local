@@ -37,6 +37,9 @@ from __future__ import annotations
 
 from typing import Any
 
+__version__ = "0.2.0"
+"""Package version; mirrors [project] version in pyproject.toml."""
+
 # Light modules stay eager: calibration/metrics need only numpy, and
 # sglang_backend is stdlib-only — so the SGLang + shim-client paths work
 # on a slim install with no torch.
@@ -49,16 +52,30 @@ from .calibration import (
     PerTypeTemperatureCalibrator,
     PlattCalibrator,
     TemperatureCalibrator,
+    conformal_set,
     expected_calibration_error,
+    fit_conformal_threshold,
     fit_temperature_by_type,
     load_type_calibration,
     multiclass_ece,
+    quality_cost_frontier,
+    route_threshold_for_target,
 )
 from .metrics import (
     aurc,
+    brier_decomposition,
     brier_score,
+    estimated_accuracy,
+    failure_auroc,
     format_table,
+    macro_f1,
+    mcnemar,
+    ndcg_at_k,
     nll_score,
+    paired_bootstrap_ci,
+    psi,
+    reciprocal_rank,
+    reliability_curve,
     selective_accuracy,
     summarize,
     top_label_ece,
@@ -82,10 +99,16 @@ from .jev_backend import JevDecideBackend, JevError
 from .jevk5_backend import JevK5Error, JevK5ServerBackend
 from .kev_backend import KevBackend, KevError
 from .clef_backend import ClefBackend, ClefError
-from .rotation import RotationAveraged
+from .rotation import (
+    ConformalChoice,
+    EnsembleBackend,
+    RotationAveraged,
+    SelfConsistent,
+)
 from .loop import ActResult, DecisionLoop, LoopResult, Observation, Step, run_loop
 from .rerank_backend import OnnxCrossEncoder, RerankBackend
 from .sglang_backend import (
+    CascadeBackend,
     HybridBackend,
     SGLangBackend,
     SGLangError,
@@ -98,6 +121,7 @@ __all__ = [
     "SGLangBackend",
     "SGLangError",
     "HybridBackend",
+    "CascadeBackend",
     "decide_fn_for",
     "JevK5ServerBackend",
     "JevK5Error",
@@ -106,6 +130,9 @@ __all__ = [
     "ClefBackend",
     "ClefError",
     "RotationAveraged",
+    "ConformalChoice",
+    "SelfConsistent",
+    "EnsembleBackend",
     "JevDecideBackend",
     "JevError",
     "DecisionLoop",
@@ -136,6 +163,10 @@ __all__ = [
     "PerTypeTemperatureCalibrator",
     "fit_temperature_by_type",
     "load_type_calibration",
+    "fit_conformal_threshold",
+    "conformal_set",
+    "route_threshold_for_target",
+    "quality_cost_frontier",
     "DECISION_TYPES",
     "MIN_ROWS_PER_TYPE",
     "choice_confidence",
@@ -149,6 +180,16 @@ __all__ = [
     "selective_accuracy",
     "summarize",
     "format_table",
+    "ndcg_at_k",
+    "reciprocal_rank",
+    "macro_f1",
+    "failure_auroc",
+    "brier_decomposition",
+    "reliability_curve",
+    "paired_bootstrap_ci",
+    "mcnemar",
+    "psi",
+    "estimated_accuracy",
 ]
 
 # Heavy names resolve on first access so `import systemone` never requires

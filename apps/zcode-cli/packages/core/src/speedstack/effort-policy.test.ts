@@ -28,11 +28,11 @@ describe("getEffortBehaviorPolicy defaults", () => {
         return [p.maxSteps, p.maxToolCalls];
       }),
       [
-        [25, 60],
-        [40, 100],
         [60, 150],
-        [90, 250],
-        [120, 400],
+        [120, 300],
+        [250, 600],
+        [500, 1200],
+        [1000, 2500],
       ],
     );
   });
@@ -55,7 +55,7 @@ describe("getEffortBehaviorPolicy defaults", () => {
     const turns = TIERS.map(
       (tier) => getEffortBehaviorPolicy(tier, envOf({})).subagentMaxTurns,
     );
-    assert.deepEqual(turns, [2, 4, 6, 8, 12]);
+    assert.deepEqual(turns, [8, 16, 32, 48, 64]);
     for (let i = 1; i < turns.length; i += 1) {
       assert.ok(turns[i] > turns[i - 1], "monotonic increase");
     }
@@ -130,8 +130,8 @@ describe("getEffortBehaviorPolicy env overrides", () => {
       }),
     );
     assert.equal(policy.subagents, "conservative");
-    assert.equal(policy.subagentMaxTurns, 6);
-    assert.equal(policy.readBreadth, 10);
+    assert.equal(policy.subagentMaxTurns, 32);
+    assert.equal(policy.readBreadth, 15);
     assert.equal(policy.verificationPasses, 0);
     assert.equal(policy.compactionAggressiveness, 1.0);
     assert.equal(policy.planThenExecuteEligible, false);
@@ -142,7 +142,7 @@ describe("resolveEffectiveTurnBudgets", () => {
   it("uses the policy raised defaults when no budget env is set", () => {
     assert.deepEqual(
       resolveEffectiveTurnBudgets({ routeTier: "balanced", effortTier: "medium", env: envOf({}) }),
-      { maxSteps: 40, maxToolCalls: 100 },
+      { maxSteps: 120, maxToolCalls: 300 },
     );
   });
 
@@ -153,7 +153,7 @@ describe("resolveEffectiveTurnBudgets", () => {
         effortTier: "medium",
         env: envOf({ ZCODE_BUDGET_BALANCED_MAX_STEPS: "20" }),
       }),
-      { maxSteps: 20, maxToolCalls: 100 },
+      { maxSteps: 20, maxToolCalls: 300 },
     );
   });
 
@@ -180,8 +180,8 @@ describe("resolveSystemOneBehaviorPolicy", () => {
     );
     assert.equal(res.tier, "high");
     assert.equal(res.policy?.tier, "high");
-    assert.equal(res.policy?.maxSteps, 60);
-    assert.deepEqual(res.budgets, { maxSteps: 60, maxToolCalls: 150 });
+    assert.equal(res.policy?.maxSteps, 250);
+    assert.deepEqual(res.budgets, { maxSteps: 250, maxToolCalls: 600 });
   });
 
   it("maps thinking off to the low policy row", () => {

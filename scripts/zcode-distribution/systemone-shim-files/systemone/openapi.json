@@ -622,6 +622,69 @@
      }
     }
    }
+  },
+  "/v1/systemone/batch": {
+   "post": {
+    "summary": "Bulk judging: up to 32 TypeSafe bodies in one call",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "items"
+        ],
+        "properties": {
+         "items": {
+          "type": "array",
+          "description": "TypeSafe /v1/systemone bodies, 1-32 items",
+          "minItems": 1,
+          "maxItems": 32
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Per-item results; failures are 4xx/5xx result entries, not request failures",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "results",
+          "n_items"
+         ],
+         "properties": {
+          "results": {
+           "type": "array",
+           "description": "Per item: {status: 200, answers, ...} or {status, error}"
+          },
+          "n_items": {
+           "type": "integer"
+          },
+          "latency_ms": {
+           "type": "number"
+          },
+          "model": {
+           "type": "string"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Malformed request (bad items list)"
+     },
+     "500": {
+      "description": "Engine failure (sanitized)"
+     }
+    }
+   }
   }
  }
 }

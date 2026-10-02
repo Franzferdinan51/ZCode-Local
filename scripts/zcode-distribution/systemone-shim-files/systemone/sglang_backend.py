@@ -707,6 +707,112 @@ class HybridBackend:
         return answers
 
 
+class CascadeBackend:
+    """FrugalGPT-style budgeted cascade over N engines, cheap first.
+
+    Each call is judged by stage 0; when every answer's confidence meets
+    `escalate_below` those answers win. Otherwise the whole call
+    re-judges at the next stage, until a stage clears the bar, the
+    `budget` (sum of per-stage `costs`) would be exceeded, or stages run
+    out. Escalation is whole-call like HybridBackend (never a mix of two
+    judges' calibrations), and a failing stage fails open to the last
+    good answers with ``escalation_error`` in ``_meta``.
+
+    The gate is the calibrated min-confidence (this package's fitted
+    per-type temperatures make it honest); pick the threshold offline
+    with calibration.route_threshold_for_target instead of guessing.
+    ``_meta`` records the answering stage, stages run, cost spent, and
+    whether the budget stopped an escalation, so operators can audit
+    the cascade's behavior per call.
+
+    Torch-free and duck-typed like HybridBackend.
+    """
+
+    backend_name = "cascade"
+
+    def __init__(
+        self,
+        stages: Sequence[Any],
+        escalate_below: float = 0.6,
+        budget: float | None = None,
+        costs: Sequence[float] | None = None,
+    ) -> None:
+        stages = list(stages)
+        if not stages:
+            raise ValueError("a cascade needs at least one stage")
+        if not 0.0 <= float(escalate_below) <= 1.0:
+            raise ValueError(
+                f"escalate_below must be in [0, 1], got {escalate_below!r}")
+        if costs is None:
+            costs = [0.0] * len(stages)
+        costs = [float(c) for c in costs]
+        if len(costs) != len(stages):
+            raise ValueError(
+                f"{len(costs)} costs for {len(stages)} stages")
+        if any(c < 0 for c in costs):
+            raise ValueError("stage costs must be >= 0")
+        if budget is not None and float(budget) < 0:
+            raise ValueError(f"budget must be >= 0, got {budget!r}")
+        self.stages = stages
+        self.escalate_below = float(escalate_below)
+        self.budget = None if budget is None else float(budget)
+        self.costs = costs
+        self.model_name = (
+            "cascade(" + ",".join(
+                str(getattr(s, "model_name", "?")) for s in stages) + ")"
+        )
+
+    def systemone(
+        self,
+        state: str,
+        questions: Sequence[Dict[str, Any]],
+        images: Sequence[str] | None = None,
+        videos: Sequence[Any] | None = None,
+    ) -> Dict[str, Any]:
+        current = self._call(self.stages[0], state, questions, images, videos)
+        spent = self.costs[0]
+        floor = HybridBackend._min_confidence(current)
+        stage = 0
+        budget_stopped = False
+        error: str | None = None
+        while floor < self.escalate_below and stage + 1 < len(self.stages):
+            nxt = self.costs[stage + 1]
+            if self.budget is not None and spent + nxt > self.budget:
+                budget_stopped = True
+                break
+            try:
+                current = self._call(
+                    self.stages[stage + 1], state, questions, images, videos)
+            except Exception as exc:
+                error = str(exc)[:200]
+                break
+            stage += 1
+            spent += nxt
+            floor = HybridBackend._min_confidence(current)
+        meta = dict(current.get("_meta", {}))
+        meta["backend"] = "cascade"
+        meta["stage"] = stage
+        meta["stages_run"] = stage + 1
+        meta["escalated"] = stage > 0
+        meta["min_confidence"] = round(floor, 4)
+        meta["cost_spent"] = round(spent, 4)
+        meta["budget_exhausted"] = budget_stopped
+        if error is not None:
+            meta["escalation_error"] = error
+        current["_meta"] = meta
+        return current
+
+    @staticmethod
+    def _call(
+        engine: Any,
+        state: str,
+        questions: Sequence[Dict[str, Any]],
+        images: Sequence[Any] | None,
+        videos: Sequence[Any] | None,
+    ) -> Dict[str, Any]:
+        return HybridBackend._call(engine, state, questions, images, videos)
+
+
 def decide_fn_for(engine: Any):
     """Adapt any engine to a See-Decide-Act loop judge.
 

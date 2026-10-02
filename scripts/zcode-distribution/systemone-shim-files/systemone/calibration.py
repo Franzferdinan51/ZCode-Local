@@ -532,3 +532,157 @@ def load_type_calibration(path: str) -> PerTypeTemperatureCalibrator | None:
         return PerTypeTemperatureCalibrator.from_dict(d)
     except (OSError, ValueError, TypeError):
         return None
+
+
+# -- split-conformal prediction sets (MAPIE/APS style, numpy only) ---------
+#
+# A point prediction plus a confidence number still leaves the operator
+# guessing how many options to take seriously. Conformal prediction
+# converts the distribution into a SET of plausible options with a
+# finite-sample marginal coverage guarantee — P(gold in set) >= 1 - α
+# on exchangeable future items — with no distributional assumptions.
+# Uses the Adaptive Prediction Sets (APS) nonconformity score: the
+# cumulative ranked mass up to and including the gold label.
+
+
+def fit_conformal_threshold(
+    records: Sequence[DecisionRecord],
+    alpha: float = 0.1,
+    qtype: str = "choice",
+) -> Dict[str, Any]:
+    """Fit a split-conformal APS threshold from labeled decision rows.
+
+    Args:
+        records: DecisionRecord rows ({type, gold, logits|probs}).
+        alpha: miscoverage rate; coverage target is 1 - alpha.
+        qtype: only rows of this answer type calibrate the threshold.
+
+    Returns {"tau", "alpha", "qtype", "n"}: sets built with
+    conformal_set(distribution, tau) cover gold with marginal
+    probability >= 1 - alpha (quantile with the (n+1) finite-sample
+    correction). Raises ValueError when no rows of qtype exist or
+    alpha is outside (0, 1).
+    """
+    if not 0.0 < alpha < 1.0:
+        raise ValueError(f"alpha must be in (0, 1), got {alpha!r}")
+    typed = [(P, gold) for t, P, gold in
+             (_record_to_row(r) for r in records) if t == qtype]
+    if not typed:
+        raise ValueError(f"no {qtype!r} rows to fit a conformal threshold")
+    scores = []
+    for P, gold in typed:
+        order = np.argsort(-P, kind="stable")
+        rank = int(np.nonzero(order == gold)[0][0])
+        scores.append(float(P[order[: rank + 1]].sum()))
+    n = len(scores)
+    level = min(1.0, float(np.ceil((n + 1) * (1.0 - alpha)) / n))
+    return {"tau": float(np.quantile(scores, level, method="higher")),
+            "alpha": float(alpha), "qtype": qtype, "n": n}
+
+
+def conformal_set(
+    distribution: Dict[str, float], tau: float
+) -> List[str]:
+    """Smallest top-probability option set with cumulative mass >= tau.
+
+    Options come out in descending-probability order; the top option is
+    always included even when tau <= 0. Raises ValueError on an empty
+    distribution.
+    """
+    if not distribution:
+        raise ValueError("need a non-empty distribution")
+    ranked = sorted(distribution.items(), key=lambda kv: (-kv[1], kv[0]))
+    out: List[str] = []
+    mass = 0.0
+    for name, p in ranked:
+        out.append(name)
+        mass += max(0.0, float(p))
+        if mass >= tau:
+            break
+    return out
+
+
+# -- RouteLLM-style cost/quality threshold selection -----------------------
+#
+# RouteLLM routes weak iff P(strong wins | q) < α and picks α to hold a
+# quality target (e.g. 95% of the strong model). These helpers run that
+# analysis offline on labeled cascade rows so the cascade ships with a
+# defensible α instead of a guessed one.
+
+
+def route_threshold_for_target(
+    rows: Sequence[tuple],
+    target: float = 0.95,
+    weak_cost: float = 0.0,
+    strong_cost: float = 1.0,
+    grid: int = 101,
+) -> Dict[str, float]:
+    """Pick the cheapest α holding target × strong-model quality.
+
+    Args:
+        rows: (p_strong_wins, weak_ok, strong_ok) per item.
+        target: keep routed quality >= target × strong quality.
+        weak_cost / strong_cost: per-call cost units for cost_share.
+        grid: α candidates swept over [0, 1].
+
+    Returns {"alpha", "routed_quality", "strong_quality",
+    "target_quality", "weak_share", "cost_share"}: the largest α (most
+    weak traffic) meeting the target. α = 0 routes everything strong.
+    Raises ValueError on empty rows or a target outside (0, 1].
+    """
+    if not 0.0 < target <= 1.0:
+        raise ValueError(f"target must be in (0, 1], got {target!r}")
+    data = [(float(p), bool(w), bool(s)) for p, w, s in rows]
+    if not data:
+        raise ValueError("need at least one cascade row")
+    strong_q = sum(1.0 for _, _, s in data if s) / len(data)
+    need = target * strong_q
+    best = {"alpha": 0.0, "routed_quality": strong_q,
+            "weak_share": 0.0}
+    for i in range(max(2, grid)):
+        alpha = i / (max(2, grid) - 1)
+        ok = sum(1.0 for p, w, s in data if (w if p < alpha else s))
+        quality = ok / len(data)
+        if quality >= need:
+            weak_share = sum(1.0 for p, _, _ in data if p < alpha) / len(data)
+            best = {"alpha": alpha, "routed_quality": quality,
+                    "weak_share": weak_share}
+    denom = strong_cost if strong_cost else 1.0
+    cost_share = (best["weak_share"] * weak_cost
+                  + (1.0 - best["weak_share"]) * strong_cost) / denom
+    return {"alpha": float(best["alpha"]),
+            "routed_quality": float(best["routed_quality"]),
+            "strong_quality": float(strong_q),
+            "target_quality": float(need),
+            "weak_share": float(best["weak_share"]),
+            "cost_share": float(cost_share)}
+
+
+def quality_cost_frontier(
+    rows: Sequence[tuple],
+    weak_cost: float = 0.0,
+    strong_cost: float = 1.0,
+    points: int = 21,
+) -> List[Dict[str, float]]:
+    """Routed (weak_share, quality, cost_share) points over the α grid.
+
+    Same row shape as route_threshold_for_target; for plotting the
+    cost/quality tradeoff before fixing α.
+    """
+    data = [(float(p), bool(w), bool(s)) for p, w, s in rows]
+    if not data:
+        raise ValueError("need at least one cascade row")
+    denom = strong_cost if strong_cost else 1.0
+    out = []
+    for i in range(max(2, points)):
+        alpha = i / (max(2, points) - 1)
+        ok = sum(1.0 for p, w, s in data if (w if p < alpha else s))
+        weak_share = sum(1.0 for p, _, _ in data if p < alpha) / len(data)
+        out.append({
+            "alpha": float(alpha),
+            "weak_share": float(weak_share),
+            "quality": float(ok / len(data)),
+            "cost_share": float((weak_share * weak_cost
+                                 + (1.0 - weak_share) * strong_cost) / denom),
+        })
+    return out
