@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- decide/permute/batch share request plumbing, kill-switches, and validators: one decision-client surface, splitting it adds indirection, not clarity. */
 // ============================================================
 // Speed Stack: SystemOne decision-engine client (decide endpoint)
 // ============================================================
@@ -31,26 +32,20 @@ export type SystemOneDecideType = "choice" | "score" | "noul";
 
 // The shim-url module is itself import-free, so importing it keeps this
 // module runnable under plain `node --test` type-stripping.
-import {
-  DEFAULT_SYSTEMONE_SHIM_URL,
-  systemOneShimEndpoint,
-} from "./systemone-shim-url.js";
+import { DEFAULT_SYSTEMONE_SHIM_URL, systemOneShimEndpoint } from "./systemone-shim-url.js";
 import { appendDecisionRecord } from "./systemone-decision-log.js";
 
 /** Local SystemOne shim decide endpoint. The shim base URL is resolved
  * from $SYSTEMONE_SHIM_URL (see ./systemone-shim-url.js) — this constant
  * is only the default; prefer resolveSystemOneDecideEndpoint() for the
  * live value. */
-export const SYSTEMONE_DECIDE_ENDPOINT =
-  `${DEFAULT_SYSTEMONE_SHIM_URL}/v1/systemone/decide`;
+export const SYSTEMONE_DECIDE_ENDPOINT = `${DEFAULT_SYSTEMONE_SHIM_URL}/v1/systemone/decide`;
 
 /**
  * Resolve the decide endpoint from $SYSTEMONE_SHIM_URL
  * (see ./systemone-shim-url.js), defaulting to the localhost shim.
  */
-export function resolveSystemOneDecideEndpoint(
-  env: NodeJS.ProcessEnv = process.env,
-): string {
+export function resolveSystemOneDecideEndpoint(env: NodeJS.ProcessEnv = process.env): string {
   return systemOneShimEndpoint("/v1/systemone/decide", env);
 }
 
@@ -127,10 +122,7 @@ export function buildDecideChoiceRequest(
   criteria: Readonly<Record<string, string>>,
 ): SystemOneDecideRequest {
   return {
-    state: (typeof state === "string" ? state : "").slice(
-      0,
-      SYSTEMONE_DECIDE_STATE_CHARS,
-    ),
+    state: (typeof state === "string" ? state : "").slice(0, SYSTEMONE_DECIDE_STATE_CHARS),
     instructions,
     criteria,
     type: "choice",
@@ -212,10 +204,7 @@ export function validateDecideAnswer(
 }
 
 /** Injectable fetch so unit tests never touch the network. */
-export type DecideFetchImpl = (
-  input: string,
-  init?: RequestInit,
-) => Promise<Response>;
+export type DecideFetchImpl = (input: string, init?: RequestInit) => Promise<Response>;
 
 /**
  * POST a decide question to the SystemOne shim. Fail-open: master
@@ -244,22 +233,16 @@ export async function decide(
     if (env[SYSTEMONE_MASTER_KILL_SWITCH_ENV] === "0") return undefined;
     if (env[SYSTEMONE_DECIDE_KILL_SWITCH_ENV] === "0") return undefined;
     const state = typeof request?.state === "string" ? request.state : "";
-    const instructions =
-      typeof request?.instructions === "string" ? request.instructions : "";
+    const instructions = typeof request?.instructions === "string" ? request.instructions : "";
     const type = request?.type;
     if (!state.trim() || !instructions.trim()) return undefined;
     if (type !== "choice" && type !== "score" && type !== "noul") {
       return undefined;
     }
     const offeredIds =
-      type === "noul"
-        ? ["yes", "no"]
-        : request.criteria
-          ? Object.keys(request.criteria)
-          : [];
+      type === "noul" ? ["yes", "no"] : request.criteria ? Object.keys(request.criteria) : [];
     if (offeredIds.length === 0) return undefined;
-    const endpoint =
-      options?.endpoint ?? resolveSystemOneDecideEndpoint(env);
+    const endpoint = options?.endpoint ?? resolveSystemOneDecideEndpoint(env);
     const timeoutMs = options?.timeoutMs ?? SYSTEMONE_DECIDE_TIMEOUT_MS;
     const fetchImpl = options?.fetchImpl ?? globalThis.fetch.bind(globalThis);
     const body: Record<string, unknown> = {
@@ -278,11 +261,278 @@ export async function decide(
         signal: controller.signal,
       });
       if (!response.ok) return undefined;
-      const answer =
-        validateDecideAnswer(await response.json(), type, offeredIds) ??
-        undefined;
+      const answer = validateDecideAnswer(await response.json(), type, offeredIds) ?? undefined;
       logDecideAnswer(type, offeredIds, answer, options?.goldLabel, env);
       return answer;
+    } catch {
+      return undefined;
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+/** Local SystemOne shim permute endpoint (default; prefer the resolver). */
+export const SYSTEMONE_PERMUTE_ENDPOINT = `${DEFAULT_SYSTEMONE_SHIM_URL}/v1/systemone/permute`;
+
+/** Local SystemOne shim batch endpoint (default; prefer the resolver). */
+export const SYSTEMONE_BATCH_ENDPOINT = `${DEFAULT_SYSTEMONE_SHIM_URL}/v1/systemone/batch`;
+
+/** Resolve the permute endpoint from $SYSTEMONE_SHIM_URL. */
+export function resolveSystemOnePermuteEndpoint(env: NodeJS.ProcessEnv = process.env): string {
+  return systemOneShimEndpoint("/v1/systemone/permute", env);
+}
+
+/** Resolve the batch endpoint from $SYSTEMONE_SHIM_URL. */
+export function resolveSystemOneBatchEndpoint(env: NodeJS.ProcessEnv = process.env): string {
+  return systemOneShimEndpoint("/v1/systemone/batch", env);
+}
+
+/** One permutation-probe run: the option order tried and its outcome. */
+export interface SystemOnePermuteRun {
+  readonly order: readonly string[];
+  readonly choice: string;
+  readonly probabilities: Readonly<Record<string, number>>;
+}
+
+/** Verdict of a permutation probe (POST /v1/systemone/permute). */
+export interface SystemOnePermuteVerdict {
+  /** True when every probed order picked the same winner. */
+  readonly stable: boolean;
+  /** Largest per-option probability spread across orders (0..1). */
+  readonly maxSpread: number;
+  readonly spread: Readonly<Record<string, number>>;
+  /** Per-order runs, first the given order then seeded shuffles. */
+  readonly runs: readonly SystemOnePermuteRun[];
+  readonly nPerm: number;
+  readonly seed: number;
+  readonly model?: string | undefined;
+  readonly latencyMs?: number | undefined;
+}
+
+/** One permutation-probe request (choice criteria, like decide). */
+export interface SystemOnePermuteRequest {
+  readonly state: string;
+  readonly instructions: string;
+  readonly criteria: Readonly<Record<string, string>>;
+  /** Orders to probe (2..32, default 8). */
+  readonly nPerm?: number | undefined;
+  readonly seed?: number | undefined;
+}
+
+/**
+ * Parse an untrusted permute response. Returns the verdict or null
+ * (caller fails open). Older shims predate `argmax_stable`: stability
+ * then derives from the runs. Never throws.
+ */
+export function validatePermuteVerdict(raw: unknown): SystemOnePermuteVerdict | null {
+  try {
+    if (!isRecord(raw)) return null;
+    const runsRaw = raw["runs"];
+    if (!Array.isArray(runsRaw) || runsRaw.length === 0) return null;
+    const runs: SystemOnePermuteRun[] = [];
+    for (const run of runsRaw) {
+      if (!isRecord(run)) return null;
+      const orderRaw = run["order"];
+      if (!Array.isArray(orderRaw)) return null;
+      const order = orderRaw.filter((o): o is string => typeof o === "string");
+      const probsRaw = run["probabilities"];
+      if (!isRecord(probsRaw)) return null;
+      const probabilities: Record<string, number> = {};
+      for (const [key, value] of Object.entries(probsRaw)) {
+        if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+          return null;
+        }
+        probabilities[key] = value;
+      }
+      if (Object.keys(probabilities).length === 0) return null;
+      const choice = run["choice"];
+      if (typeof choice !== "string" || !(choice in probabilities)) {
+        return null;
+      }
+      runs.push({ order, choice, probabilities });
+    }
+    const flag = raw["argmax_stable"];
+    const stable =
+      typeof flag === "boolean" ? flag : runs.every((r) => r.choice === runs[0]?.choice);
+    const spreadRaw = raw["spread"];
+    const spread: Record<string, number> = {};
+    if (isRecord(spreadRaw)) {
+      for (const [key, value] of Object.entries(spreadRaw)) {
+        if (typeof value === "number" && Number.isFinite(value)) {
+          spread[key] = value;
+        }
+      }
+    }
+    const values = Object.values(spread);
+    const nPerm = raw["n_perm"];
+    const seed = raw["seed"];
+    const model = raw["model"];
+    const latencyMs = raw["latency_ms"];
+    return {
+      stable,
+      maxSpread: values.length > 0 ? Math.max(0, ...values) : 0,
+      spread,
+      runs,
+      nPerm: typeof nPerm === "number" && Number.isFinite(nPerm) ? Math.floor(nPerm) : runs.length,
+      seed: typeof seed === "number" && Number.isFinite(seed) ? Math.floor(seed) : 0,
+      ...(typeof model === "string" && model.length > 0 ? { model } : {}),
+      ...(typeof latencyMs === "number" && Number.isFinite(latencyMs) ? { latencyMs } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export interface SystemOnePermuteOptions {
+  readonly endpoint?: string | undefined;
+  readonly timeoutMs?: number | undefined;
+  readonly env?: NodeJS.ProcessEnv | undefined;
+  readonly fetchImpl?: DecideFetchImpl | undefined;
+}
+
+/**
+ * Verify a choice by re-running it under `nPerm` option orders
+ * (POST /v1/systemone/permute): the Decide → verify → Act gate for
+ * high-stakes choices. Fail-open: kill-switches, bad input, shim
+ * down, timeout, non-200, or an unparseable verdict all return
+ * undefined. Never throws.
+ */
+export async function permute(
+  request: SystemOnePermuteRequest,
+  options?: SystemOnePermuteOptions,
+): Promise<SystemOnePermuteVerdict | undefined> {
+  try {
+    const env = options?.env ?? process.env;
+    if (env[SYSTEMONE_MASTER_KILL_SWITCH_ENV] === "0") return undefined;
+    if (env[SYSTEMONE_DECIDE_KILL_SWITCH_ENV] === "0") return undefined;
+    const state = typeof request?.state === "string" ? request.state : "";
+    const instructions = typeof request?.instructions === "string" ? request.instructions : "";
+    if (!state.trim() || !instructions.trim()) return undefined;
+    const criteria = request?.criteria;
+    if (!isRecord(criteria) || Object.keys(criteria).length < 2) {
+      return undefined;
+    }
+    const nPerm = request.nPerm ?? 8;
+    if (!Number.isInteger(nPerm) || nPerm < 2 || nPerm > 32) return undefined;
+    const seed = request.seed ?? 0;
+    if (typeof seed !== "number" || !Number.isFinite(seed)) return undefined;
+    const endpoint = options?.endpoint ?? resolveSystemOnePermuteEndpoint(env);
+    const timeoutMs = options?.timeoutMs ?? SYSTEMONE_DECIDE_TIMEOUT_MS;
+    const fetchImpl = options?.fetchImpl ?? globalThis.fetch.bind(globalThis);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetchImpl(endpoint, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          state: state.slice(0, SYSTEMONE_DECIDE_STATE_CHARS),
+          question: { type: "choice", criteria, instructions },
+          n_perm: nPerm,
+          seed,
+          client: "zcode-local",
+        }),
+        signal: controller.signal,
+      });
+      if (!response.ok) return undefined;
+      return validatePermuteVerdict(await response.json()) ?? undefined;
+    } catch {
+      return undefined;
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+/** One judged item of a batch call. */
+export interface SystemOneBatchItemResult {
+  /** Per-item status: 200 judged, 4xx/5xx per-item failure. */
+  readonly status: number;
+  readonly error?: string | undefined;
+  /** Full per-item object exactly as the shim sent it. */
+  readonly payload: unknown;
+}
+
+/** Outcome of a bulk judge call (POST /v1/systemone/batch). */
+export interface SystemOneBatchResults {
+  /** Per-item results in request order. */
+  readonly results: readonly SystemOneBatchItemResult[];
+  readonly model?: string | undefined;
+  readonly nItems: number;
+}
+
+/**
+ * Parse an untrusted batch response. Returns the results or null
+ * (caller fails open). Never throws.
+ */
+export function validateBatchResults(raw: unknown): SystemOneBatchResults | null {
+  try {
+    if (!isRecord(raw)) return null;
+    const items = raw["results"];
+    if (!Array.isArray(items) || items.length === 0) return null;
+    const results: SystemOneBatchItemResult[] = [];
+    for (const item of items) {
+      if (!isRecord(item)) return null;
+      const status = item["status"];
+      const error = item["error"];
+      results.push({
+        status: typeof status === "number" && Number.isFinite(status) ? Math.floor(status) : 0,
+        ...(typeof error === "string" ? { error } : {}),
+        payload: item,
+      });
+    }
+    const model = raw["model"];
+    const nItems = raw["n_items"];
+    return {
+      results,
+      ...(typeof model === "string" && model.length > 0 ? { model } : {}),
+      nItems:
+        typeof nItems === "number" && Number.isFinite(nItems) ? Math.floor(nItems) : results.length,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Judge up to 32 TypeSafe bodies in one call
+ * (POST /v1/systemone/batch). Each item is a `/v1/systemone`-shaped
+ * body (`{state, questions, ...}`); item shapes are the shim's to
+ * validate, so anything JSON goes out and per-item failures come back
+ * as non-200 results instead of failing the batch. Fail-open:
+ * kill-switches, bad sizes, transport issues, or an unparseable
+ * payload all return undefined. Never throws.
+ */
+export async function judgeBatch(
+  items: readonly unknown[],
+  options?: SystemOnePermuteOptions,
+): Promise<SystemOneBatchResults | undefined> {
+  try {
+    const env = options?.env ?? process.env;
+    if (env[SYSTEMONE_MASTER_KILL_SWITCH_ENV] === "0") return undefined;
+    if (env[SYSTEMONE_DECIDE_KILL_SWITCH_ENV] === "0") return undefined;
+    if (!Array.isArray(items) || items.length === 0 || items.length > 32) {
+      return undefined;
+    }
+    const endpoint = options?.endpoint ?? resolveSystemOneBatchEndpoint(env);
+    const timeoutMs = options?.timeoutMs ?? SYSTEMONE_DECIDE_TIMEOUT_MS;
+    const fetchImpl = options?.fetchImpl ?? globalThis.fetch.bind(globalThis);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetchImpl(endpoint, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ items, client: "zcode-local" }),
+        signal: controller.signal,
+      });
+      if (!response.ok) return undefined;
+      return validateBatchResults(await response.json()) ?? undefined;
     } catch {
       return undefined;
     } finally {
@@ -308,26 +558,21 @@ function logDecideAnswer(
 ): void {
   try {
     if (!answer) return;
-    const probs = offeredIds.map(
-      (id) => answer.probabilities[id] ?? Number.NaN,
-    );
+    const probs = offeredIds.map((id) => answer.probabilities[id] ?? Number.NaN);
     if (probs.some((p) => !Number.isFinite(p))) return;
-    const gold =
-      typeof goldLabel === "string" ? offeredIds.indexOf(goldLabel) : -1;
+    const gold = typeof goldLabel === "string" ? offeredIds.indexOf(goldLabel) : -1;
     appendDecisionRecord(
       {
-      kind: "decide",
-      ts: new Date().toISOString(),
-      type,
-      labels: [...offeredIds],
-      probs,
-      label: answer.label,
-      ...(gold >= 0 ? { gold } : {}),
-      confidence: answer.confidence,
-      ...(answer.backend ? { backend: answer.backend } : {}),
-      ...(answer.latencyMs !== undefined
-        ? { latencyMs: answer.latencyMs }
-        : {}),
+        kind: "decide",
+        ts: new Date().toISOString(),
+        type,
+        labels: [...offeredIds],
+        probs,
+        label: answer.label,
+        ...(gold >= 0 ? { gold } : {}),
+        confidence: answer.confidence,
+        ...(answer.backend ? { backend: answer.backend } : {}),
+        ...(answer.latencyMs !== undefined ? { latencyMs: answer.latencyMs } : {}),
       },
       env,
     );

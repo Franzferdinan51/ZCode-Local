@@ -67,46 +67,58 @@ Everything below is what this fork changed relative to upstream ZCode. The UI, c
 - Builds default to the `local` flavor; `ZCODE_OFFICIAL_IDENTITY=1` restores legacy production/preview resolution.
 
 
-**SystemOne agent-flow control (3.25.0)**
+**SystemOne decision layer (3.25.0)**
 
-SystemOne is this fork's local model router — and as of 3.25.0 it drives
-the full agent behavior plan, not just model selection. Each task asks the
-router for a tier, an effort level, and task labels, and the runtime
-conditions the turn on that decision: effort maps to a behavior policy (max
-model steps and tool calls, subagent allowance, read/search breadth,
-verification passes after edits, compaction aggressiveness), the labels
-drive per-task tool-pack pruning (irrelevant MCP servers and tools are
-suppressed before the request is built), heavy/ambiguous work gets
-plan-then-execute (planner writes `PLAN.md` with read-only tools, executor
-implements it), and doom-loop fingerprinting escalates repeated-call
-patterns from warning to strategy-change nudge to pause-and-retry.
+SystemOne is this fork's local **decision layer** — not a cost router.
+Every task runs See > Decide > Act: each task asks the decider for a tier,
+an effort level, and task labels, and the runtime conditions the turn on
+that decision: effort maps to a behavior policy (max model steps and tool
+calls, subagent allowance, read/search breadth, verification passes after
+edits, compaction aggressiveness), the labels drive per-task tool-pack
+pruning (irrelevant MCP servers and tools are suppressed before the request
+is built), heavy/ambiguous work gets plan-then-execute (planner writes
+`PLAN.md` with read-only tools, executor implements it), and doom-loop
+fingerprinting escalates repeated-call patterns from warning to
+strategy-change nudge to pause-and-retry. Cost/quality routing is one
+facet of `route`, which is one facet of deciding.
 
 What SystemOne decides, in one line: **how much effort the task gets, which
-tools it sees, how long it may run, whether it plans first, how deeply it
-verifies, and how aggressively it compacts.**
+model runs it, which tools it sees, how long it may run, whether it plans
+first, which plan wins, whether a choice is stable, how deeply it verifies,
+and how aggressively it compacts.**
 
-The fail-open contract: a down, slow, or malformed router changes nothing
+| Decision | Endpoint | How ZCode uses it |
+|---|---|---|
+| Effort tier + turn budget | `route` | behavior policy + budgets per task |
+| Model | `route` (`ranked_models`) | best-value pick drives the model target (catalog-resolved, fail-open) |
+| Tool shortlist | `route` (`ranked_tools`) | shim-ranked ids are keep-signals; uncertain routes never prune |
+| Which plan to run | `rank-plans` | plan-then-execute runs the winning plan |
+| Typed questions | `decide` | `zcode-local decide` (`choice`/`noul`/`score`) |
+| Choice stability | `permute` | `zcode-local decide --verify` (STABLE/UNSTABLE verdict) |
+| Bulk judging | `batch` | `zcode-local decide --batch` (up to 32 bodies, per-item results) |
+
+The fail-open contract: a down, slow, or malformed decider changes nothing
 about what the agent *can* do — the turn runs exactly as it would without
 SystemOne, with the full tool surface attached. Low-confidence routes never
 prune. If a pruned tool turns out to be needed, the turn retries once with
 the full set. Every behavior number (budgets, policy dimensions) lives in
 config or env, tunable without a release, and model choice always flows
-from the router, the registry, or explicit user config — no hard-coded
+from the decider, the registry, or explicit user config — no hard-coded
 model IDs.
 
-**Decision engine:** the router is SystemOne — a **Jev-style**
-typed-decision layer over local GLiClass checkpoints ("tiny decides, big
-works"). Each call returns a scored decision in ~100 ms: per-tier
-probabilities, top-1/top-2 margins, and an uncertainty flag; the scores are
-calibrated, then drive tier, effort, expected-utility model ranking,
-tool/MCP relevance ranking, and plan ranking. It is advisory-only and
-fail-open, and lives in the Python shim (`systemone serve --port 8765`,
-or `python -m systemone.shim`, at `http://127.0.0.1:8765`, overridable
-with `SYSTEMONE_SHIM_URL`). The shim serves route, rank-plans, and typed
-decide endpoints (`/v1/systemone/{route,rank-plans,decide}` plus the Jev
-`/v1/systemone`) on engines `auto|local|sglang|jevk5|onnx|jev|kev|clef`
-(`SYSTEMONE_ENGINE`; `clef` runs Cloudflare's clef/clef-flash weights
-locally). Details: https://github.com/Franzferdinan51/SystemOne.
+**Decision engine:** SystemOne is a **Jev-style** typed-decision layer over
+local GLiClass checkpoints ("tiny decides, big works"). Each call returns a
+scored decision in ~100 ms: per-tier probabilities, top-1/top-2 margins,
+and an uncertainty flag; the scores are calibrated, then drive tier,
+effort, expected-utility model ranking, tool/MCP relevance ranking, and
+plan ranking. It is advisory-only and fail-open, and lives in the Python
+shim (`systemone serve --port 8765`, or `python -m systemone.shim`, at
+`http://127.0.0.1:8765`, overridable with `SYSTEMONE_SHIM_URL`). The shim
+serves the full decision surface (`/v1/systemone/{route,rank-plans,decide,
+permute,batch}` plus the Jev `/v1/systemone` and `/v1/decide`) on engines
+`auto|local|sglang|jevk5|onnx|jev|kev|clef` (`SYSTEMONE_ENGINE`; `clef` runs
+Cloudflare's clef/clef-flash weights locally). Details:
+https://github.com/Franzferdinan51/SystemOne.
 
 Decider-backed plan ranking: `plan-execute` asks the shim for N
 candidate plans and posts them to `/v1/systemone/rank-plans`, executing the
@@ -130,10 +142,13 @@ never loads, unloads, switches, or competes with the loaded worker model.
 - **`zcode-local decide`:** the decide engine is callable directly, with no extra
   setup — the bundled shim starts as usual:
   `zcode-local decide --type choice|score|noul --state "..." --instructions "..."
-  [--criteria label=description ...] [--gold label] [--json] [--timeout-ms N]`.
-  Choice takes labeled alternatives, `noul` is plain yes/no (no criteria),
-  `score` requires labels `0..n-1`. A down shim prints a clear error and
-  exits 1 (fail-open for the rest of the CLI).
+  [--criteria label=description ...] [--gold label] [--verify] [--json] [--timeout-ms N]`,
+  or `zcode-local decide --batch <file> [--json]` for a JSON array of
+  `/v1/systemone` bodies (1..32, per-item results). Choice takes labeled
+  alternatives, `noul` is plain yes/no (no criteria), `score` requires
+  labels `0..n-1`; `--verify` (choice only) re-runs the choice under 8
+  option orders and prints a STABLE/UNSTABLE verdict. A down shim prints a
+  clear error and exits 1 (fail-open for the rest of the CLI).
 - **Decision records:** every route and decide decision appends one JSONL
   record to `~/.config/zcode/systemone-decision-records.jsonl` (respects
   `XDG_CONFIG_HOME`; no setup needed). Records carry type, labels, probability
@@ -146,7 +161,7 @@ never loads, unloads, switches, or competes with the loaded worker model.
   opinion (`jeff1_second_opinion`, historical name), agreement is logged at
   info and disagreement at warn; the routed tier never changes — advisory
   only. If the shim is unreachable at runtime, one warning per process
-  ("SystemOne shim unreachable; continuing without routing (fail-open)")
+  ("SystemOne shim unreachable; continuing without decisions (fail-open)")
   replaces the old debug-only note — unless `ZCODE_SYSTEMONE=0`
   intentionally disables SystemOne.
 - **Route controls (shim 0.2.0):** the route client sends validated

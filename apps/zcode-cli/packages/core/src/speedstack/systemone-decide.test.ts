@@ -16,8 +16,12 @@ import { test } from "node:test";
 import {
   buildDecideChoiceRequest,
   decide,
+  judgeBatch,
+  permute,
   SYSTEMONE_DECIDE_STATE_CHARS,
+  validateBatchResults,
   validateDecideAnswer,
+  validatePermuteVerdict,
   type DecideFetchImpl,
   type SystemOneDecideType,
 } from "./systemone-decide.ts";
@@ -159,42 +163,21 @@ test("validation rejects unoffered labels, bad mass, and argmax mismatch", () =>
   };
   assert.ok(validateDecideAnswer(good, type, offered));
   // unoffered label
-  assert.equal(
-    validateDecideAnswer({ ...good, label: "c" }, type, offered),
-    null,
-  );
+  assert.equal(validateDecideAnswer({ ...good, label: "c" }, type, offered), null);
   // mass doesn't sum to 1
   assert.equal(
-    validateDecideAnswer(
-      { ...good, probabilities: { a: 0.7, b: 0.2 } },
-      type,
-      offered,
-    ),
+    validateDecideAnswer({ ...good, probabilities: { a: 0.7, b: 0.2 } }, type, offered),
     null,
   );
   // argmax mismatch
   assert.equal(
-    validateDecideAnswer(
-      { ...good, label: "b", probabilities: { a: 0.7, b: 0.3 } },
-      type,
-      offered,
-    ),
+    validateDecideAnswer({ ...good, label: "b", probabilities: { a: 0.7, b: 0.3 } }, type, offered),
     null,
   );
   // missing distribution key
-  assert.equal(
-    validateDecideAnswer(
-      { ...good, probabilities: { a: 1 } },
-      type,
-      offered,
-    ),
-    null,
-  );
+  assert.equal(validateDecideAnswer({ ...good, probabilities: { a: 1 } }, type, offered), null);
   // score requires the level/distribution shape
-  assert.equal(
-    validateDecideAnswer(good, "score", offered),
-    null,
-  );
+  assert.equal(validateDecideAnswer(good, "score", offered), null);
   assert.ok(
     validateDecideAnswer(
       {
@@ -235,34 +218,20 @@ test("decide fails open: kill switch, empty state, non-200, throw", async () => 
   assert.equal(called, false);
   // empty state
   assert.equal(
-    await decide(
-      { ...request, state: "  " },
-      { env: ENV_ON, fetchImpl: counting.impl },
-    ),
+    await decide({ ...request, state: "  " }, { env: ENV_ON, fetchImpl: counting.impl }),
     undefined,
   );
   // non-200
-  const nonOk = stubFetch(
-    () => ({ ok: false, json: async () => ({}) }) as Response,
-  );
-  assert.equal(
-    await decide(request, { env: ENV_ON, fetchImpl: nonOk.impl }),
-    undefined,
-  );
+  const nonOk = stubFetch(() => ({ ok: false, json: async () => ({}) }) as Response);
+  assert.equal(await decide(request, { env: ENV_ON, fetchImpl: nonOk.impl }), undefined);
   // fetch throws: never propagates
   const throwing: DecideFetchImpl = async () => {
     throw new Error("boom");
   };
-  assert.equal(
-    await decide(request, { env: ENV_ON, fetchImpl: throwing }),
-    undefined,
-  );
+  assert.equal(await decide(request, { env: ENV_ON, fetchImpl: throwing }), undefined);
   // invalid response body: fail-open
   const invalid = stubFetch(() => okResponse({ nonsense: true }));
-  assert.equal(
-    await decide(request, { env: ENV_ON, fetchImpl: invalid.impl }),
-    undefined,
-  );
+  assert.equal(await decide(request, { env: ENV_ON, fetchImpl: invalid.impl }), undefined);
 });
 
 test("decide accepts an endpoint override", async () => {
@@ -400,4 +369,182 @@ test("decide omits gold when the outcome is not knowable", async () => {
   assert.equal(record.kind, "decide");
   assert.equal(record.type, "noul");
   assert.equal("gold" in record, false);
+});
+
+const PERMUTE_STABLE = {
+  runs: [
+    {
+      order: ["keep", "rewrite"],
+      probabilities: { keep: 0.2, rewrite: 0.8 },
+      choice: "rewrite",
+    },
+    {
+      order: ["rewrite", "keep"],
+      probabilities: { keep: 0.25, rewrite: 0.75 },
+      choice: "rewrite",
+    },
+  ],
+  argmax_stable: true,
+  spread: { keep: 0.05, rewrite: 0.05 },
+  n_perm: 2,
+  seed: 7,
+  model: "mock",
+  latency_ms: 1.5,
+};
+
+test("validatePermuteVerdict parses a stable verdict", () => {
+  const verdict = validatePermuteVerdict(PERMUTE_STABLE);
+  assert.ok(verdict);
+  assert.equal(verdict.stable, true);
+  assert.equal(verdict.maxSpread, 0.05);
+  assert.equal(verdict.runs.length, 2);
+  assert.equal(verdict.runs[0]!.choice, "rewrite");
+  assert.deepEqual(verdict.runs[0]!.order, ["keep", "rewrite"]);
+  assert.equal(verdict.nPerm, 2);
+  assert.equal(verdict.seed, 7);
+  assert.equal(verdict.model, "mock");
+  assert.equal(verdict.latencyMs, 1.5);
+});
+
+test("validatePermuteVerdict derives stability when the flag is absent", () => {
+  const { argmax_stable: _flag, ...rest } = PERMUTE_STABLE;
+  assert.equal(validatePermuteVerdict(rest)?.stable, true);
+  const flipped = {
+    ...rest,
+    runs: [rest.runs[0], { ...rest.runs[1], choice: "keep" }],
+  };
+  assert.equal(validatePermuteVerdict(flipped)?.stable, false);
+});
+
+test("validatePermuteVerdict rejects junk", () => {
+  assert.equal(validatePermuteVerdict({ ok: true }), null);
+  assert.equal(validatePermuteVerdict({ runs: [] }), null);
+  assert.equal(
+    validatePermuteVerdict({
+      runs: [{ order: ["a", "b"], probabilities: {}, choice: "a" }],
+    }),
+    null,
+  );
+});
+
+test("permute posts the contract and parses the verdict", async () => {
+  const { impl, calls } = stubFetch(() => okResponse(PERMUTE_STABLE));
+  const verdict = await permute(
+    {
+      state: "some state",
+      instructions: "should I rewrite?",
+      criteria: { keep: "leave it", rewrite: "start over" },
+      nPerm: 2,
+      seed: 7,
+    },
+    { env: ENV_ON, fetchImpl: impl },
+  );
+  assert.ok(verdict);
+  assert.equal(verdict.stable, true);
+  assert.equal(verdict.nPerm, 2);
+  assert.equal(verdict.seed, 7);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.input, "http://127.0.0.1:8765/v1/systemone/permute");
+  const body = calls[0]!.body as Record<string, unknown>;
+  assert.equal(body["n_perm"], 2);
+  assert.equal(body["seed"], 7);
+  const question = body["question"] as Record<string, unknown>;
+  assert.equal(question["type"], "choice");
+  assert.deepEqual(question["criteria"], {
+    keep: "leave it",
+    rewrite: "start over",
+  });
+});
+
+test("permute fails open on bad input and kill switches", async () => {
+  const good = {
+    state: "s",
+    instructions: "q?",
+    criteria: { a: "x", b: "y" },
+  };
+  const { impl } = stubFetch(() => okResponse(PERMUTE_STABLE));
+  // fewer than 2 options
+  assert.equal(
+    await permute({ ...good, criteria: { a: "x" } }, { env: ENV_ON, fetchImpl: impl }),
+    undefined,
+  );
+  // nPerm outside 2..32
+  for (const nPerm of [1, 33]) {
+    assert.equal(await permute({ ...good, nPerm }, { env: ENV_ON, fetchImpl: impl }), undefined);
+  }
+  // kill switches
+  assert.equal(
+    await permute(good, {
+      env: { ...ENV_ON, ZCODE_SYSTEMONE: "0" },
+      fetchImpl: impl,
+    }),
+    undefined,
+  );
+  assert.equal(
+    await permute(good, {
+      env: { ...ENV_ON, ZCODE_SYSTEMONE_DECIDE: "0" },
+      fetchImpl: impl,
+    }),
+    undefined,
+  );
+});
+
+const BATCH_MIXED = {
+  results: [
+    { status: 200, answers: { q: { choice: "a" } }, latency_ms: 1.0 },
+    { status: 400, error: "bad request: boom" },
+  ],
+  model: "mock",
+  n_items: 2,
+};
+
+test("validateBatchResults parses mixed per-item results", () => {
+  const batch = validateBatchResults(BATCH_MIXED);
+  assert.ok(batch);
+  assert.equal(batch.results.length, 2);
+  assert.equal(batch.nItems, 2);
+  assert.equal(batch.model, "mock");
+  assert.equal(batch.results[0]!.status, 200);
+  assert.equal(batch.results[0]!.error, undefined);
+  assert.deepEqual((batch.results[0]!.payload as Record<string, unknown>)["answers"], {
+    q: { choice: "a" },
+  });
+  assert.equal(batch.results[1]!.status, 400);
+  assert.equal(batch.results[1]!.error, "bad request: boom");
+});
+
+test("validateBatchResults rejects junk", () => {
+  assert.equal(validateBatchResults({ ok: true }), null);
+  assert.equal(validateBatchResults({ results: [] }), null);
+  assert.equal(validateBatchResults({ results: ["nope"] }), null);
+});
+
+test("judgeBatch posts the contract and parses results", async () => {
+  const { impl, calls } = stubFetch(() => okResponse(BATCH_MIXED));
+  const items = [{ state: "s1", questions: [] }, { state: "s2" }];
+  const batch = await judgeBatch(items, { env: ENV_ON, fetchImpl: impl });
+  assert.ok(batch);
+  assert.equal(batch.results.length, 2);
+  assert.equal(batch.results[0]!.status, 200);
+  assert.equal(batch.results[1]!.status, 400);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.input, "http://127.0.0.1:8765/v1/systemone/batch");
+  const body = calls[0]!.body as Record<string, unknown>;
+  assert.deepEqual(body["items"], items);
+});
+
+test("judgeBatch fails open on bad sizes and kill switches", async () => {
+  const { impl } = stubFetch(() => okResponse(BATCH_MIXED));
+  assert.equal(await judgeBatch([], { env: ENV_ON, fetchImpl: impl }), undefined);
+  assert.equal(
+    await judgeBatch(new Array(33).fill({}), { env: ENV_ON, fetchImpl: impl }),
+    undefined,
+  );
+  assert.equal(
+    await judgeBatch([{}], {
+      env: { ...ENV_ON, ZCODE_SYSTEMONE: "0" },
+      fetchImpl: impl,
+    }),
+    undefined,
+  );
 });
