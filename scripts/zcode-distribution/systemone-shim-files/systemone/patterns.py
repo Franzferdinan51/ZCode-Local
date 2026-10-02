@@ -26,6 +26,8 @@ from __future__ import annotations
 import math
 import os
 import random
+import re
+from datetime import datetime
 from typing import Any, Dict, List, Sequence
 
 import numpy as np
@@ -298,8 +300,75 @@ def make_questions(
 #
 # Adapted from Mapika/decider (Apache-2.0): decider/systemone.py (confidence
 # formulas) and decider/prompt.py (state-first prompt-row template with
-# option shuffling).
+# option shuffling). The score formula is the shared reference also
+# shipped by Kev (kev/api.py) and SGLang (serving_decisions.py).
 # ---------------------------------------------------------------------------
+
+
+_MONTHS = (
+    "January|February|March|April|May|June|July|August|September|"
+    "October|November|December"
+)
+_DATE_RE = re.compile(
+    rf"\b(?:{_MONTHS}) \d{{1,2}}, \d{{4}}\b|\b\d{{4}}-\d{{2}}-\d{{2}}\b"
+)
+
+
+def date_facts(text: str) -> str:
+    """Deterministic date arithmetic, ported from Kev (kev/api.py).
+
+    Every pair of absolute dates found in `text`, as one sentence each
+    ("August 3, 2026 is 12 days after July 22, 2026."). Judges cannot
+    subtract dates reliably; they can use a stated day count. Returns ""
+    when fewer than two dates are found; dates in order of appearance.
+    """
+    found: List[tuple] = []
+    for m in _DATE_RE.finditer(text or ""):
+        raw = m.group(0)
+        try:
+            d = (
+                datetime.strptime(raw, "%B %d, %Y")
+                if "," in raw
+                else datetime.strptime(raw, "%Y-%m-%d")
+            )
+        except ValueError:
+            continue
+        if raw not in [r for r, _ in found]:
+            found.append((raw, d))
+    facts = []
+    for i in range(len(found)):
+        for j in range(i + 1, len(found)):
+            n = (found[j][1] - found[i][1]).days
+            unit = "day" if abs(n) == 1 else "days"
+            if n:
+                rel = "after" if n > 0 else "before"
+                facts.append(
+                    f"{found[j][0]} is {abs(n)} {unit} {rel} {found[i][0]}."
+                )
+            else:
+                facts.append(
+                    f"{found[j][0]} is the same day as {found[i][0]}."
+                )
+    return " ".join(facts)
+
+
+def with_date_facts(state: Any) -> Any:
+    """State plus a `date_facts` field/paragraph when 2+ absolute dates appear.
+
+    Object states gain a `date_facts` key, list states a trailing
+    {"date_facts": ...} item, string states an appended paragraph.
+    Returns the state unchanged when fewer than two dates are found.
+    """
+    facts = date_facts(state if isinstance(state, str) else str(state))
+    if not facts:
+        return state
+    if isinstance(state, dict):
+        return {**state, "date_facts": facts}
+    if isinstance(state, list):
+        return state + [{"date_facts": facts}]
+    if isinstance(state, str):
+        return f"{state}\n\ndate_facts: {facts}"
+    return state
 
 
 def choice_confidence(probs: Sequence[float]) -> float:
@@ -319,22 +388,33 @@ def choice_confidence(probs: Sequence[float]) -> float:
 
 
 def score_confidence(probs: Sequence[float]) -> float:
-    """TypeSafe score confidence: max(0, 1 - sum_i p_i*|i-k| / (n-1)).
+    """TypeSafe score confidence: max(0, 1 - spread / uniform_spread).
 
-    `probs` must be ordered by level; k is the argmax level index. Scores 1
-    when all mass sits on one level, lower the more mass spreads onto
-    distant levels. For two levels this equals the winning probability
-    p_max; a uniform distribution over n levels lands around 0.5-0.67.
+    `probs` must be ordered by level; spread is the probability-weighted
+    distance from the mode (first argmax), and uniform_spread is the mean
+    absolute deviation of a uniform distribution over the levels around
+    (n-1)/2. Scores 1 when all mass sits on one level, 0 at uniform (or
+    anything as spread). This is the reference formula shared by
+    TypeSafe's system-one-adapter 0.2.1 (via Kev's api.py), SGLang's
+    /v1/decisions + /v1/systemone serving, and Kev's api.py — identical
+    values whichever judge answers. Inputs are normalized (all-zeros ->
+    uniform); a single level degenerates to 1.0.
     """
     p = np.asarray(list(probs), dtype=np.float64)
     n = len(p)
     if n == 0:
         return 0.0
     if n == 1:
-        return float(np.clip(p[0], 0.0, 1.0))
+        return 1.0
+    total = float(p.sum())
+    if total <= 0:
+        p = np.full(n, 1.0 / n)
+    else:
+        p = p / total
     k = int(p.argmax())
-    dist = np.abs(np.arange(n) - k) / (n - 1.0)
-    return float(max(0.0, 1.0 - float(p @ dist)))
+    spread = float(p @ np.abs(np.arange(n) - k))
+    uniform_spread = float(np.abs(np.arange(n) - (n - 1.0) / 2.0).mean())
+    return float(max(0.0, 1.0 - spread / uniform_spread))
 
 
 def noul_confidence(p_yes: float) -> float:

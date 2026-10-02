@@ -1,0 +1,93 @@
+{
+  "_comment": "Kev tier pack for the SystemOne model router (POST /v1/systemone/route): pass as the per-request 'registry' to route decision-judge tasks across the Kev family (Franzferdinan51/kev, Kev 1.0) instead of the bundled LM Studio topology. Tier descriptions are contrastive (what each size FAILS at) because the router discriminates on capability boundaries. Quality numbers are seeded from Kev 1.0 evals (breadth-v1 test index / held-out transfer accuracy, scaled 0-1) — tune over time. Serve any size with e.g. `python -m kev.serve --run jaredpalmer/kev-4b --port 8008`, then SYSTEMONE_ENGINE=kev KEV_BASE_URL=http://127.0.0.1:8008. Temperatures are the shipped per-checkpoint T (served by kev.serve itself).",
+  "tiers": {
+    "kev-0.8b": {
+      "cost": "cheapest Kev; laptop CPU/GPU, any Apple Silicon Mac, any 4 GB GPU",
+      "description": "Handles ONLY trivial decision judgments: clear-cut yes/no, obvious choices, short states. FAILS at subtle trade-offs, long documents (validated only to 8k tokens), hard held-out-style generalization (breadth index 23.3, far below the family), or anything needing the bigger judges' accuracy.",
+      "latency_ms_p50": 250,
+      "model_id": "jaredpalmer/kev-0.8b",
+      "temperature": 2.35,
+      "context_tokens": 8192,
+      "models": [
+        {
+          "available": true,
+          "cost": 0.2,
+          "latency_ms_p50": 250,
+          "model_id": "jaredpalmer/kev-0.8b",
+          "quality": {
+            "balanced": 0.45,
+            "economy": 0.7,
+            "heavy": 0.2
+          },
+          "vram_gb": 4
+        }
+      ]
+    },
+    "kev-4b": {
+      "cost": "mid Kev; L40S/H100 or 32 GB Mac, measured to 65k tokens",
+      "description": "Handles everyday decision judgments: triage, routing, tone/urgency, moderate documents. Within ~4 points of Jev on new sources. FAILS at the hardest held-out judgments, very long documents past 8k validated tokens, and datacentre-grade accuracy (breadth index 38.0 vs 52.3 for the 27B).",
+      "latency_ms_p50": 500,
+      "model_id": "jaredpalmer/kev-4b",
+      "temperature": 2.41,
+      "context_tokens": 8192,
+      "models": [
+        {
+          "available": true,
+          "cost": 1.0,
+          "latency_ms_p50": 500,
+          "model_id": "jaredpalmer/kev-4b",
+          "quality": {
+            "balanced": 0.78,
+            "economy": 0.85,
+            "heavy": 0.5
+          },
+          "vram_gb": 16
+        }
+      ]
+    },
+    "kev-9b": {
+      "cost": "strong Kev; L40S/H100 or 32 GB+ Mac",
+      "description": "Handles hard decision judgments: subtle policies, multi-aspect states, documents and devtools-style items. Within ~4 points of Jev on new sources (breadth index 41.0). FAILS only where the 27B's full-weight training wins: the longest documents and the most adversarial held-out items.",
+      "latency_ms_p50": 1100,
+      "model_id": "jaredpalmer/kev-9b",
+      "temperature": 2.19,
+      "context_tokens": 8192,
+      "models": [
+        {
+          "available": true,
+          "cost": 2.2,
+          "latency_ms_p50": 1100,
+          "model_id": "jaredpalmer/kev-9b",
+          "quality": {
+            "balanced": 0.85,
+            "economy": 0.88,
+            "heavy": 0.72
+          },
+          "vram_gb": 24
+        }
+      ]
+    },
+    "kev-27b": {
+      "cost": "flagship Kev; H100 80 GB class, 51 GB full weights",
+      "description": "Handles the HARDEST decision judgments: adversarial held-out items, 65k-token documents at full accuracy, anything where Jev-level calibration matters (within 1 point of Jev on new sources, breadth index 52.3, Brier 0.225). The router's last resort before giving up on local judging — never fails for lack of accuracy, only on cost/latency.",
+      "latency_ms_p50": 2800,
+      "model_id": "jaredpalmer/kev-27b",
+      "temperature": 1.32,
+      "context_tokens": 65536,
+      "models": [
+        {
+          "available": true,
+          "cost": 6.0,
+          "latency_ms_p50": 2800,
+          "model_id": "jaredpalmer/kev-27b",
+          "quality": {
+            "balanced": 0.93,
+            "economy": 0.9,
+            "heavy": 0.9
+          },
+          "vram_gb": 80
+        }
+      ]
+    }
+  }
+}

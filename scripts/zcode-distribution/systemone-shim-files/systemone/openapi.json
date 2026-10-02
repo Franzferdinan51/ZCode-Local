@@ -232,10 +232,8 @@
             },
             "levels": {
              "type": "array",
-             "description": "score: 2-10 items",
-             "items": {
-              "type": "object"
-             }
+             "description": "score: 2-10 bare strings (upstream; {name} mappings also accepted here)",
+             "items": {}
             }
            }
           }
@@ -530,6 +528,80 @@
           },
           "confidence": {
            "type": "number"
+          },
+          "latency_ms": {
+           "type": "number"
+          },
+          "model": {
+           "type": "string"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Malformed request"
+     },
+     "500": {
+      "description": "Engine failure (sanitized)"
+     }
+    }
+   }
+  },
+  "/v1/systemone/permute": {
+   "post": {
+    "summary": "Permutation-robustness probe: one choice question under n_perm option orders",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "state",
+         "question"
+        ],
+        "properties": {
+         "state": {},
+         "question": {
+          "type": "object",
+          "description": "TypeSafe choice question ({type: choice, instructions?, criteria: {label: desc}})"
+         },
+         "n_perm": {
+          "type": "integer",
+          "description": "option orders to run, 2-32 (default 8)"
+         },
+         "seed": {
+          "type": "integer",
+          "description": "shuffle seed (default 0)"
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Per-order runs, argmax stability, per-option spread",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "runs",
+          "argmax_stable",
+          "spread"
+         ],
+         "properties": {
+          "runs": {
+           "type": "array"
+          },
+          "argmax_stable": {
+           "type": "boolean"
+          },
+          "spread": {
+           "type": "object"
           },
           "latency_ms": {
            "type": "number"

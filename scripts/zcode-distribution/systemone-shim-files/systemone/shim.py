@@ -45,6 +45,11 @@ Endpoints:
                               sidecar when reachable (backend "decider"),
                               else answer locally with the GLiClass engine
                               (backend "fallback", fail-open)
+    POST /v1/systemone/permute
+                              permutation-robustness probe (Kev-style):
+                              re-run one choice question under n_perm
+                              option orders; reports per-order answers,
+                              argmax stability, and per-option spread
     GET  /healthz, /           liveness
 
 Request body for /v1/systemone (TypeSafe dialect):
@@ -106,6 +111,7 @@ import datetime
 import json
 import logging
 import os
+import random
 import re
 import sys
 import threading
@@ -122,8 +128,25 @@ from .patterns import (
     BodyTooLarge,
     api_token_ok,
     check_body_length,
+    date_facts,
     validate_choice,
 )
+
+
+def maybe_date_facts(state_text: str) -> str:
+    """Append Kev-style date_facts when SYSTEMONE_DATE_FACTS=1.
+
+    Opt-in preprocessing (ported from Kev's with_date_facts): when the
+    state mentions two or more absolute dates, a "date_facts: ..." line
+    with the pairwise day counts is appended so the judge can use
+    stated day counts instead of subtracting dates itself.
+    """
+    if os.environ.get("SYSTEMONE_DATE_FACTS") != "1":
+        return state_text
+    facts = date_facts(state_text)
+    if not facts:
+        return state_text
+    return f"{state_text}\n\ndate_facts: {facts}"
 
 try:
     from .api import SystemOne
@@ -135,6 +158,7 @@ except ImportError:  # slim install (no torch/gliclass): SGLang-engine or
 
 from .jev_backend import JevDecideBackend
 from .jevk5_backend import JevK5ServerBackend
+from .kev_backend import KevBackend
 from .rerank_backend import OnnxCrossEncoder, RerankBackend
 from .sglang_backend import HybridBackend, SGLangBackend
 from .scoring import (
@@ -1098,6 +1122,7 @@ def translate_body(body: Dict[str, Any]) -> tuple[str, List[Dict[str, Any]]]:
     state_text = state_to_text(body.get("state", ""))
     if len(state_text) > MAX_STATE_CHARS:
         state_text = state_text[:MAX_STATE_CHARS]
+    state_text = maybe_date_facts(state_text)
     raw = body.get("questions") or {}
     if isinstance(raw, list):
         items = [
@@ -1126,12 +1151,15 @@ def translate_answers(answers: Dict[str, Any]) -> Dict[str, Any]:
         if name == "_meta" or not isinstance(ans, dict):
             continue
         atype = ans.get("type")
+        # "x_label_mass" mirrors SGLang's /v1/systemone answers (null:
+        # the local engine has no candidate-scoring signal).
         if atype == "choice":
             out[name] = {
                 "type": "choice",
                 "choice": ans["choice"],
                 "probabilities": ans["probabilities"],
                 "confidence": ans["confidence"],
+                "x_label_mass": ans.get("label_mass"),
             }
         elif atype == "score":
             dist = ans["distribution"]
@@ -1143,6 +1171,7 @@ def translate_answers(answers: Dict[str, Any]) -> Dict[str, Any]:
                 # Clef legend: level -> description (identity when the
                 # engine was not given descriptions).
                 "legend": dict(ans.get("legend") or {lv: lv for lv in dist}),
+                "x_label_mass": ans.get("label_mass"),
             }
         elif atype == "noul":
             out[name] = {
@@ -1153,6 +1182,7 @@ def translate_answers(answers: Dict[str, Any]) -> Dict[str, Any]:
                 "noul": ans["probability"],
                 "answer": ans["answer"],
                 "confidence": ans["confidence"],
+                "x_label_mass": ans.get("label_mass"),
             }
     return out
 
@@ -1164,13 +1194,12 @@ def translate_answers(answers: Dict[str, Any]) -> Dict[str, Any]:
 # tokens. This shim answers the same dialect with the local engine, so any
 # client written against SGLang works unchanged against this box.
 #
-# Version status (verified 2026-09-30): the endpoints are main-branch only,
-# not in any tagged SGLang release (newest PyPI was 0.5.20) — pin a nightly
-# build until a release contains them. Image input is undocumented upstream
-# (input is string | object | array, rendered as compact JSON — the
-# Pokemon demo's "live game state" was structured data, not screenshots),
-# so image parts are noted and skipped here; SGLangBackend marks images=
-# experimental until proven against a live nightly server.
+# Version status (verified 2026-10-02 against sglang main): the endpoints
+# are main-branch only, not in any tagged SGLang release — pin a nightly
+# build until a release contains them. Image input is confirmed
+# unsupported upstream (input is string | object | array, rendered as
+# compact JSON), so image parts are noted and skipped here, and
+# SGLangBackend drops images= (reported in _meta["media_dropped"]).
 
 
 def _option_names(options: Any) -> List[str]:
@@ -1248,6 +1277,7 @@ def translate_decisions_body(
     state_text = decisions_input_to_text(body.get("input", ""))
     if len(state_text) > MAX_STATE_CHARS:
         state_text = state_text[:MAX_STATE_CHARS]
+    state_text = maybe_date_facts(state_text)
     raw_questions = body.get("questions")
     if not isinstance(raw_questions, list) or not raw_questions:
         raise Unprocessable("'questions' must be a non-empty list")
@@ -1304,9 +1334,15 @@ def translate_decisions_answers(
 ) -> Dict[str, Any]:
     """Engine answers -> SGLang /v1/decisions {"answers": {id: {...}}}.
 
-    The local engine has no label-mass signal (that is an SGLang serving
-    concept), so "label_mass" is null here — the key stays for shape
-    compatibility with SGLang clients.
+    Shapes mirror SGLang's DecisionAnswer exactly (verified against
+    sglang main serving_decisions.py): choice probabilities keyed by
+    option name; score probabilities keyed by level INDEX ("0"-"9")
+    with the index-weighted mean as "score"; yes_no with
+    probabilities {"yes", "no"}. The local engine has no label-mass
+    signal (that is an SGLang serving concept), so "label_mass" is
+    null here — the key stays for shape compatibility with SGLang
+    clients. ("probability"/"answer" ride along on yes_no as local
+    extensions; upstream readers use "probabilities".)
     """
     out: Dict[str, Any] = {}
     for qid in ids:
@@ -1319,7 +1355,7 @@ def translate_decisions_answers(
                 "type": "choice",
                 "choice": ans["choice"],
                 "probabilities": ans["probabilities"],
-                "label_mass": None,
+                "label_mass": ans.get("label_mass"),
             }
         elif atype == "score":
             dist = ans["distribution"]
@@ -1328,15 +1364,21 @@ def translate_decisions_answers(
             out[qid] = {
                 "type": "score",
                 "score": wmean,
-                "probabilities": dist,
-                "label_mass": None,
+                # Index-keyed, like upstream: the client sent the levels
+                # in order and maps positions back to names itself.
+                "probabilities": {
+                    str(i): float(dist[lv]) for i, lv in enumerate(levels)
+                },
+                "label_mass": ans.get("label_mass"),
             }
         elif atype == "noul":
+            p_yes = float(ans["probability"])
             out[qid] = {
                 "type": "yes_no",
+                "probabilities": {"yes": p_yes, "no": 1.0 - p_yes},
                 "probability": ans["probability"],
                 "answer": ans["answer"],
-                "label_mass": None,
+                "label_mass": ans.get("label_mass"),
             }
     return out
 
@@ -1419,6 +1461,7 @@ def translate_decide_body(
     state_text, images = decide_state_parts(body.get("state"))
     if len(state_text) > MAX_STATE_CHARS:
         state_text = state_text[:MAX_STATE_CHARS]
+    state_text = maybe_date_facts(state_text)
     question = body.get("question")
     if not isinstance(question, str) or not question.strip():
         raise Unprocessable("request must include a non-empty 'question' string")
@@ -1866,6 +1909,10 @@ class ShimHandler(BaseHTTPRequestHandler):
             return 422, {"error": f"unprocessable: {e}"}
         answers = self.server.engine.systemone(state_text, questions)
         return 200, {
+            # "object" mirrors SGLang's DecisionResponse; this box does no
+            # SGLang prompt rendering, so it reports no prompt_format_version
+            # rather than echo a version it does not implement.
+            "object": "decisions",
             "answers": translate_decisions_answers(answers, ids),
             "model": self.server.engine.model_name,
             "usage": {},
@@ -2044,6 +2091,7 @@ class ShimHandler(BaseHTTPRequestHandler):
         state_text = state_to_text(body["state"])
         if len(state_text) > MAX_STATE_CHARS:
             state_text = state_text[:MAX_STATE_CHARS]
+        state_text = maybe_date_facts(state_text)
 
         t0 = time.perf_counter()
         jeff1 = decide_via_jeff1({
@@ -2082,6 +2130,79 @@ class ShimHandler(BaseHTTPRequestHandler):
             "model": getattr(self.server.engine, "model_name", "?"),
         })
         return 200, payload
+
+    def _handle_permute(self) -> tuple[int, Dict[str, Any]]:
+        """POST /v1/systemone/permute -> (status, payload).
+
+        Body: {"state", "question": {TypeSafe choice question},
+               "n_perm" (2-32, default 8), "seed" (default 0)}.
+        Re-runs the question under n_perm option orders (first the
+        given order, then seeded shuffles) against the serving engine
+        and reports per-order answers, argmax stability, and the
+        per-option probability spread — Kev's permutation probe
+        (kev.serve systemone_permute), engine-agnostic.
+        """
+        body = self._read_body()
+        if not isinstance(body, dict):
+            raise ValueError("request body must be a JSON object")
+        if "state" not in body:
+            raise ValueError("request must include 'state'")
+        raw_q = body.get("question")
+        if not isinstance(raw_q, dict):
+            raise ValueError("request must include a 'question' mapping")
+        n_perm = body.get("n_perm", 8)
+        if isinstance(n_perm, bool) or not isinstance(n_perm, int):
+            raise ValueError("'n_perm' must be an integer")
+        if not 2 <= n_perm <= 32:
+            raise ValueError("'n_perm' must be in 2..32")
+        seed = body.get("seed", 0)
+        if isinstance(seed, bool) or not isinstance(seed, int):
+            raise ValueError("'seed' must be an integer")
+        question = translate_question("permute", raw_q)
+        if question.get("type") != "choice":
+            raise ValueError("'question' must be a choice question")
+        options = list(question.get("options") or [])
+        if len(options) < 2:
+            raise ValueError("'question' needs >= 2 options")
+        state_text = state_to_text(body["state"])
+        if len(state_text) > MAX_STATE_CHARS:
+            state_text = state_text[:MAX_STATE_CHARS]
+        state_text = maybe_date_facts(state_text)
+
+        rng = random.Random(seed)
+        orders: List[List[str]] = [list(options)]
+        for _ in range(n_perm - 1):
+            order = list(options)
+            rng.shuffle(order)
+            orders.append(order)
+        runs: List[Dict[str, Any]] = []
+        t0 = time.perf_counter()
+        for order in orders:
+            answers = self.server.engine.systemone(
+                state_text, [{**question, "options": order}])
+            ans = answers.get("permute") or {}
+            probs = dict(ans.get("probabilities") or {})
+            choice = ans.get("choice") or (
+                max(probs, key=probs.get) if probs else None)
+            if choice is None:
+                raise ValueError("engine returned no choice answer")
+            runs.append({"order": order, "probabilities": probs,
+                         "choice": choice})
+        latency_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+        spread = {opt: round(max(r["probabilities"].get(opt, 0.0)
+                                 for r in runs)
+                             - min(r["probabilities"].get(opt, 0.0)
+                                   for r in runs), 4)
+                  for opt in options}
+        return 200, {
+            "runs": runs,
+            "argmax_stable": len({r["choice"] for r in runs}) == 1,
+            "spread": spread,
+            "n_perm": n_perm,
+            "seed": seed,
+            "model": getattr(self.server.engine, "model_name", "?"),
+            "latency_ms": latency_ms,
+        }
 
     def do_GET(self) -> None:  # noqa: N802
         t0 = self._begin_request()
@@ -2171,12 +2292,19 @@ class ShimHandler(BaseHTTPRequestHandler):
                     "decide_type": payload.get("type"),
                     "backend": payload.get("backend"),
                 }
+            elif self.path == "/v1/systemone/permute":
+                status, payload = self._handle_permute()
+                extra = {
+                    "n_perm": payload.get("n_perm"),
+                    "argmax_stable": payload.get("argmax_stable"),
+                }
             else:
                 status = 404
                 payload = {
                     "error": "not found, POST /v1/decisions, /v1/decide, "
                              "/v1/systemone, /v1/systemone/route, "
-                             "/v1/systemone/rank-plans or /v1/systemone/decide"
+                             "/v1/systemone/rank-plans, /v1/systemone/decide, "
+                             "or /v1/systemone/permute"
                 }
         except BodyTooLarge as e:
             status, payload = 413, {"error": f"request too large: {e}"}
@@ -2252,7 +2380,7 @@ def _win32_detach(argv: list[str]) -> bool:
 # -- baked-in engine selection (local GLiClass vs SGLang) --------------------
 
 ENGINE_ENV = "SYSTEMONE_ENGINE"
-ENGINE_CHOICES = ("auto", "local", "sglang", "jevk5", "onnx", "jev")
+ENGINE_CHOICES = ("auto", "local", "sglang", "jevk5", "onnx", "jev", "kev")
 
 
 def engine_backend_name(engine: Any) -> str:
@@ -2270,6 +2398,8 @@ def engine_backend_name(engine: Any) -> str:
         return "sglang"
     if isinstance(engine, JevK5ServerBackend):
         return "jevk5"
+    if isinstance(engine, KevBackend):
+        return "kev"
     if isinstance(engine, RerankBackend):
         return "rerank"
     if SystemOne is not None and isinstance(engine, SystemOne):
@@ -2283,12 +2413,14 @@ def create_engine(name: str | None = None) -> Any:
     """Build the decision engine the shim serves.
 
     Args:
-        name: "auto" (default) | "local" | "sglang" | "jevk5" | "onnx" | "jev".
-            Unset -> the SYSTEMONE_ENGINE env var, defaulting to "auto".
+        name: "auto" (default) | "local" | "sglang" | "jevk5" | "onnx" |
+            "jev" | "kev". Unset -> the SYSTEMONE_ENGINE env var,
+            defaulting to "auto".
 
     - auto: JEV when JEV_URL is set and healthy, else SGLang when
       SGLANG_BASE_URL is set and healthy, else JevK5 when JEVK5_BASE_URL
-      is set and healthy, else the local GLiClass engine. Probes only run
+      is set and healthy, else Kev when KEV_BASE_URL is set and healthy,
+      else the local GLiClass engine. Probes only run
       for explicitly configured servers, so a default box never stalls at
       startup. The JEV decision model wins when configured — it is the
       flagship judge (calibrated System 1 + System 2 in one engine).
@@ -2305,15 +2437,19 @@ def create_engine(name: str | None = None) -> Any:
     - jev: JevDecideBackend (a JEV decision model's /v1/decide, e.g.
       serve_decide.py or a hosted Jev API). Same fail-open behavior as
       sglang. Only this engine serves images natively.
+    - kev: KevBackend (kev.serve's /v1/systemone: Kev-0.8B/4B/9B/27B).
+      Same fail-open behavior as sglang. Text-only, but the long-doc
+      specialist (up to 65,536 tokens on Kev-27B).
 
     Raises:
         ValueError: unknown engine name.
-        SGLangError / JevK5Error: remote requested but unreachable and no
-            local fallback.
+        SGLangError / JevK5Error / KevError: remote requested but
+            unreachable and no local fallback.
         ImportError: local requested but the heavy deps are not installed.
     """
     from .jev_backend import JevError
     from .jevk5_backend import JevK5Error
+    from .kev_backend import KevError
     from .sglang_backend import SGLangError
 
     sel = (name or os.environ.get(ENGINE_ENV) or "auto").strip().lower()
@@ -2329,9 +2465,9 @@ def create_engine(name: str | None = None) -> Any:
                 "the local GLiClass engine needs torch + transformers + "
                 "gliclass, which are not installed. Either install them "
                 "(pip install 'systemone[local]') or serve a remote engine "
-                "instead (SYSTEMONE_ENGINE=sglang|jevk5|jev with its base "
-                "URL set) or the ONNX judge (SYSTEMONE_ENGINE=onnx with "
-                "onnxruntime installed)."
+                "instead (SYSTEMONE_ENGINE=sglang|jevk5|jev|kev with its "
+                "base URL set) or the ONNX judge (SYSTEMONE_ENGINE=onnx "
+                "with onnxruntime installed)."
             )
         return SystemOne(model_name=os.environ.get("SYSTEMONE_MODEL"))
 
@@ -2391,6 +2527,10 @@ def create_engine(name: str | None = None) -> Any:
         found = _remote("jevk5", JevK5ServerBackend, JevK5Error, "JEVK5_BASE_URL")
         if found is not None:
             return found
+    if sel == "kev" or (os.environ.get("KEV_BASE_URL") or "").strip():
+        found = _remote("kev", KevBackend, KevError, "KEV_BASE_URL")
+        if found is not None:
+            return found
     return _local()
 
 
@@ -2414,8 +2554,9 @@ def serve(
     Args:
         engine: explicit engine instance (wins over engine_name; tests use
             this to inject stubs).
-        engine_name: "auto" | "local" | "sglang" | "jevk5" | "onnx" | "jev"
-            (see create_engine); unset -> $SYSTEMONE_ENGINE, default "auto".
+        engine_name: "auto" | "local" | "sglang" | "jevk5" | "onnx" |
+            "jev" | "kev" (see create_engine); unset -> $SYSTEMONE_ENGINE,
+            default "auto".
     """
     engine = engine or create_engine(engine_name)
     server = ThreadingHTTPServer(("127.0.0.1", port), ShimHandler)

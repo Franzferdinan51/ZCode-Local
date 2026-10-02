@@ -104,7 +104,7 @@ fail-open, and lives in the Python shim (`systemone serve --port 8765`,
 or `python -m systemone.shim`, at `http://127.0.0.1:8765`, overridable
 with `SYSTEMONE_SHIM_URL`). The shim serves route, rank-plans, and typed
 decide endpoints (`/v1/systemone/{route,rank-plans,decide}` plus the Jev
-`/v1/systemone`) on engines `auto|local|sglang|jevk5|onnx|jev`
+`/v1/systemone`) on engines `auto|local|sglang|jevk5|onnx|jev|kev`
 (`SYSTEMONE_ENGINE`). Details: https://github.com/Franzferdinan51/SystemOne.
 
 Decider-backed plan ranking: `plan-execute` asks the shim for N

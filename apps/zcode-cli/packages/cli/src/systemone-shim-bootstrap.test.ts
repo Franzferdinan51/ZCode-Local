@@ -106,10 +106,18 @@ test("requiredShimImports: slim floor + local weights only when needed", () => {
     "gliclass",
   ]);
   assert.deepEqual(requiredShimImports({ SYSTEMONE_ENGINE: "sglang" }), ["numpy"]);
+  assert.deepEqual(requiredShimImports({ SYSTEMONE_ENGINE: "kev" }), ["numpy"]);
   assert.deepEqual(
     requiredShimImports({
       SYSTEMONE_ENGINE: "auto",
       SGLANG_BASE_URL: "http://x:30000",
+    }),
+    ["numpy"],
+  );
+  assert.deepEqual(
+    requiredShimImports({
+      SYSTEMONE_ENGINE: "auto",
+      KEV_BASE_URL: "http://x:8008",
     }),
     ["numpy"],
   );

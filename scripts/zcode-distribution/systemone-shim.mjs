@@ -27,14 +27,19 @@ const DEFAULT_SOURCE_DIR = join(bundledDocsDir, "systemone");
 
 // The shim's runtime closure (systemone 0.1.0): shim.py imports .patterns,
 // .api (guarded: absent on slim installs), the engine backends
-// (jev/jevk5/rerank/sglang), .scoring, .jeff1, .calibration, and .metrics;
-// __init__ additionally imports .loop; cli.py/client.py/jeff1_sidecar.py
-// back `systemone serve` (+ --with-jeff1). Data files ride alongside
-// (model registry, calibration, tool registry, tuning, openapi).
-// Everything else in the checkout (acp/mcp servers, tune/distill/bench,
-// examples, tests, logs) is dev tooling and stays out of the release.
+// (jev/jevk5/kev/rerank/sglang), .scoring, .jeff1, .calibration, and
+// .metrics; __init__ additionally imports .loop and .rotation;
+// cli.py/client.py/jeff1_sidecar.py back `systemone serve`
+// (+ --with-jeff1); cli.py lazily imports .jevbench (jevbench command),
+// .battery (battery command), and .mcp_server (mcp helpers).
+// mcp_server.py/acp_server.py are the stdio MCP/ACP servers. Data files
+// ride alongside (model registry, kev tier pack, calibration, tool
+// registry, tuning, openapi). Everything else in the checkout
+// (tune/distill/bench_2048, examples, tests, logs) is dev tooling and
+// stays out of the release.
 const SHIM_FILES = [
   "__init__.py",
+  "acp_server.py",
   "api.py",
   "calibration.py",
   "cli.py",
@@ -42,15 +47,24 @@ const SHIM_FILES = [
   "jeff1.py",
   "jeff1_sidecar.py",
   "jev_backend.py",
+  "jevbench.py",
   "jevk5_backend.py",
+  "kev_backend.py",
   "loop.py",
+  "mcp_server.py",
   "metrics.py",
   "patterns.py",
   "rerank_backend.py",
+  "rotation.py",
   "scoring.py",
   "sglang_backend.py",
   "shim.py",
+  "battery/run.py",
+  "battery/fit.py",
+  "battery/fit_types.py",
+  "battery/tasks.jsonl",
   "calibration.json",
+  "kev_registry.json",
   "model_registry.json",
   "openapi.json",
   "tool_registry.json",
@@ -88,7 +102,9 @@ export async function stageSystemOneShim(packageRoot, options = {}) {
     if (!fromStat?.isFile()) {
       throw new Error(`SystemOne shim source is missing ${file}: ${from}`);
     }
-    await cp(from, join(destDir, file));
+    const to = join(destDir, file);
+    await mkdir(dirname(to), { recursive: true });
+    await cp(from, to);
   }
   for (const file of DOC_FILES) {
     const from = join(bundledDocsDir, file);

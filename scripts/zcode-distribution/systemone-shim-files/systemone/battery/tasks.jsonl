@@ -1,0 +1,250 @@
+{"task": "What is 2+2?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "What is the capital of France?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Who wrote Romeo and Juliet?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "When did the Apollo 11 mission land on the moon?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Calculate 17 * 23", "tier": "economy", "effort": "low", "labels": []}
+{"task": "How many ounces are in a pound?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Define photosynthesis in one sentence.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "What is 15% of 240?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Which planet is known as the Red Planet?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Summarize this paragraph in one sentence: The quick brown fox jumps over the lazy dog. Dogs are loyal animals.", "tier": "economy", "effort": "low", "labels": ["summarize"]}
+{"task": "Give me a TL;DR of this article about gardening tips for beginners.", "tier": "economy", "effort": "low", "labels": ["summarize"]}
+{"task": "Extract all email addresses from this text: Contact alice@example.com or bob@test.org for details.", "tier": "economy", "effort": "low", "labels": ["email", "search"]}
+{"task": "Translate 'good morning' to Spanish.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Check the grammar of this sentence: Their going to the store yesterday.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Write a haiku about autumn rain.", "tier": "economy", "effort": "low", "labels": ["writing"]}
+{"task": "Rewrite this sentence to sound more formal: Hey, can you send me that file?", "tier": "economy", "effort": "low", "labels": ["writing", "files"]}
+{"task": "Classify this review as positive or negative: The product broke after one day, terrible quality.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "List the key dates mentioned in this memo in bullet points.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "What does the acronym CPU stand for?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Convert 3 kilometers to miles.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Who is the current president of the United States?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Proofread this short bio for spelling errors: John is a softwear engineer with ten years of experiance.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Summarize these meeting notes into three bullet points.", "tier": "economy", "effort": "low", "labels": ["summarize", "calendar"]}
+{"task": "What is the boiling point of water in Fahrenheit?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Explain the difference between a debit card and a credit card.", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Draft a polite email declining a meeting invitation next Tuesday.", "tier": "balanced", "effort": "medium", "labels": ["email", "writing", "calendar"]}
+{"task": "Brainstorm five birthday gift ideas for someone who loves cooking.", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Write a Python script that renames all .txt files in a folder to lowercase.", "tier": "balanced", "effort": "medium", "labels": ["code", "files"]}
+{"task": "Explain how photosynthesis works in simple terms for a 10-year-old.", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Help me plan a weekend trip to Chicago: what should I see in two days?", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Write a cover letter paragraph for a junior marketing position.", "tier": "balanced", "effort": "medium", "labels": ["writing"]}
+{"task": "Explain why the sky is blue.", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Draft an agenda for a 30-minute team standup meeting.", "tier": "balanced", "effort": "medium", "labels": ["calendar", "writing"]}
+{"task": "Compare the pros and cons of renting vs buying a home.", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Write a bash one-liner to find the largest file in a directory.", "tier": "balanced", "effort": "medium", "labels": ["code", "files"]}
+{"task": "Explain the basics of how a neural network learns.", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Help me write a toast for my sister's wedding.", "tier": "balanced", "effort": "medium", "labels": ["writing"]}
+{"task": "What are some effective strategies for managing email overload at work?", "tier": "balanced", "effort": "medium", "labels": ["email"]}
+{"task": "Explain the causes of the French Revolution in a few paragraphs.", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Write a simple JavaScript function that validates an email address.", "tier": "balanced", "effort": "medium", "labels": ["code", "email"]}
+{"task": "Plan a week's worth of healthy dinners for a family of four.", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Explain how compound interest works with an example.", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Draft a follow-up email after a job interview, thanking the panel.", "tier": "balanced", "effort": "medium", "labels": ["email", "writing"]}
+{"task": "What should I pack for a week-long hiking trip in the Rockies?", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Explain the difference between TCP and UDP networking protocols.", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Debug this Python traceback: the script crashes with an IndexError in process_items() when the input list is empty. Find the root cause and fix it.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "There is a race condition in our multithreaded order processor: two threads occasionally decrement the same inventory counter twice. Design a fix using locks or atomic operations.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "Prove by induction that the sum of the first n natural numbers equals n(n+1)/2.", "tier": "heavy", "effort": "high", "labels": []}
+{"task": "Review this employment contract clause for legal risks before I sign it.", "tier": "heavy", "effort": "high", "labels": ["legal"]}
+{"task": "Perform a security audit of this authentication flow: identify vulnerabilities like session fixation, token leakage, or timing attacks, and propose mitigations.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "Design a distributed rate limiter for 10 microservices handling 100k requests per second, with Redis, handling clock skew and failover.", "tier": "heavy", "effort": "high", "labels": ["code", "ops"]}
+{"task": "My program segfaults intermittently in the C extension when parsing large JSON payloads. Diagnose the memory leak from this stack trace.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "Solve this differential equation: dy/dx = 3x^2 + 2x, with y(0) = 1. Show all steps.", "tier": "heavy", "effort": "high", "labels": []}
+{"task": "Refactor this 800-line God class into separate modules following SOLID principles, preserving all existing behavior.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "Explain the differential diagnosis for persistent chest pain in a 55-year-old male with hypertension.", "tier": "heavy", "effort": "high", "labels": ["medical"]}
+{"task": "Write a browser automation script that logs into a dashboard, navigates through paginated tables, and exports the data to CSV, handling dynamic loading.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "Design the system architecture for a real-time collaborative document editor with conflict resolution (CRDTs vs operational transformation).", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "Analyze this 40-page financial report and identify the three biggest risks to the company's solvency, citing specific sections.", "tier": "heavy", "effort": "high", "labels": ["files"]}
+{"task": "Implement a compiler pass that performs constant folding on an AST, handling nested expressions and short-circuit evaluation.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "I have an AI agent that needs to call MCP tools in sequence with error recovery. Design the tool-use orchestration loop with retries and fallbacks.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "How much is 2 plus 2?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Tell me what 2+2 equals.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Quick math: 2+2?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "What country has Paris as its capital?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Paris is the capital of which country?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Name the capital city of France.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Who is the author of Romeo and Juliet?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Romeo and Juliet was written by whom?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Name the playwright behind Romeo and Juliet.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "In what year did Apollo 11 land on the moon?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "When did humans first land on the moon?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "What year was the first moon landing?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "What is 17 times 23?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Multiply 17 by 23.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Compute 17 x 23.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "How many ounces make up one pound?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "A pound contains how many ounces?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Convert one pound to ounces.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Define photosynthesis in a single sentence.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "In one sentence, what is photosynthesis?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Give a one-sentence definition of photosynthesis.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "What is fifteen percent of 240?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Compute 15% of 240.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Find 15 percent of two hundred forty.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Which planet do we call the Red Planet?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "The Red Planet is which planet?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Name the planet nicknamed the Red Planet.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Condense this paragraph to a single sentence: The quick brown fox jumps over the lazy dog. Dogs are loyal animals.", "tier": "economy", "effort": "low", "labels": ["summarize"]}
+{"task": "One-sentence summary of: The quick brown fox jumps over the lazy dog. Dogs are loyal animals.", "tier": "economy", "effort": "low", "labels": ["summarize"]}
+{"task": "Boil this paragraph down to one sentence: The quick brown fox jumps over the lazy dog. Dogs are loyal animals.", "tier": "economy", "effort": "low", "labels": ["summarize"]}
+{"task": "Summarize this beginner gardening article in a couple of lines.", "tier": "economy", "effort": "low", "labels": ["summarize"]}
+{"task": "Give me the gist of this article about gardening tips for beginners.", "tier": "economy", "effort": "low", "labels": ["summarize"]}
+{"task": "Short version of this beginner's gardening guide, please.", "tier": "economy", "effort": "low", "labels": ["summarize"]}
+{"task": "Pull out every email address in: Reach alice@example.com or bob@test.org for details.", "tier": "economy", "effort": "low", "labels": ["email", "search"]}
+{"task": "Find the email addresses hidden in this text: Contact alice@example.com or bob@test.org for details.", "tier": "economy", "effort": "low", "labels": ["email", "search"]}
+{"task": "List all emails in the following: Contact alice@example.com or bob@test.org for details.", "tier": "economy", "effort": "low", "labels": ["email", "search"]}
+{"task": "How do you say 'good morning' in Spanish?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "'Good morning' translated into Spanish is?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Spanish for 'good morning'?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Is this sentence grammatically correct: Their going to the store yesterday.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Fix the grammar: Their going to the store yesterday.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Point out the grammar mistake in: Their going to the store yesterday.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Compose a haiku about rain in autumn.", "tier": "economy", "effort": "low", "labels": ["writing"]}
+{"task": "A haiku on the theme of autumn rain, please.", "tier": "economy", "effort": "low", "labels": ["writing"]}
+{"task": "Write me a short haiku about fall rainfall.", "tier": "economy", "effort": "low", "labels": ["writing"]}
+{"task": "Make this more formal: Hey, can you send me that file?", "tier": "economy", "effort": "low", "labels": ["writing", "files"]}
+{"task": "Rephrase formally: Hey, can you send me that file?", "tier": "economy", "effort": "low", "labels": ["writing", "files"]}
+{"task": "Turn this casual request into formal language: Hey, can you send me that file?", "tier": "economy", "effort": "low", "labels": ["writing", "files"]}
+{"task": "Is this review positive or negative: The product broke after one day, terrible quality.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Sentiment check: The product broke after one day, terrible quality. Positive or negative?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Rate the sentiment of this review: The product broke after one day, terrible quality.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Turn the key dates in this memo into bullet points.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Bullet-list the important dates from this memo.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "What are the key dates in this memo? List them as bullets.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "CPU is an acronym for what?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Expand the acronym CPU.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "What do the letters CPU stand for?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "How many miles is 3 kilometers?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "3 km equals how many miles?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Convert three kilometers into miles.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Who currently holds the US presidency?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Name the current president of the United States.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "The current US president is who?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Spot the spelling errors in this bio: John is a softwear engineer with ten years of experiance.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Correct the spelling in: John is a softwear engineer with ten years of experiance.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "This bio has typos, fix them: John is a softwear engineer with ten years of experiance.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Boil these meeting notes down to three bullet points.", "tier": "economy", "effort": "low", "labels": ["summarize", "calendar"]}
+{"task": "Three-bullet summary of these meeting notes.", "tier": "economy", "effort": "low", "labels": ["summarize", "calendar"]}
+{"task": "Condense the meeting notes into 3 bullets.", "tier": "economy", "effort": "low", "labels": ["summarize", "calendar"]}
+{"task": "At what temperature does water boil, in Fahrenheit?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Water boils at how many degrees Fahrenheit?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Give the boiling point of water in degrees Fahrenheit.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "What's the difference between debit and credit cards?", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Can you explain debit cards versus credit cards?", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "How do debit cards differ from credit cards?", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Write a courteous email turning down a meeting invite for next Tuesday.", "tier": "balanced", "effort": "medium", "labels": ["email", "writing", "calendar"]}
+{"task": "I need to decline a Tuesday meeting politely over email.", "tier": "balanced", "effort": "medium", "labels": ["email", "writing", "calendar"]}
+{"task": "Compose a polite email saying I can't make the meeting next Tuesday.", "tier": "balanced", "effort": "medium", "labels": ["email", "writing", "calendar"]}
+{"task": "Suggest five birthday presents for a cooking enthusiast.", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "I need birthday gift ideas for someone who loves to cook.", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "What are good birthday gifts for a person passionate about cooking?", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Create a Python script to lowercase the names of every .txt file in a folder.", "tier": "balanced", "effort": "medium", "labels": ["code", "files"]}
+{"task": "I need a Python script that renames all txt files in a directory to lowercase.", "tier": "balanced", "effort": "medium", "labels": ["code", "files"]}
+{"task": "Python: batch-rename .txt files in a folder so the filenames are lowercase.", "tier": "balanced", "effort": "medium", "labels": ["code", "files"]}
+{"task": "Explain photosynthesis like I'm ten years old.", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "How would you describe photosynthesis to a child?", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Break down photosynthesis in kid-friendly terms.", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "I'm spending two days in Chicago. What should I prioritize seeing?", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Plan a 2-day Chicago itinerary for me.", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "What are the must-see sights for a weekend trip to Chicago?", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Write one strong paragraph for a junior marketing cover letter.", "tier": "balanced", "effort": "medium", "labels": ["writing"]}
+{"task": "Draft a cover letter paragraph for an entry-level marketing role.", "tier": "balanced", "effort": "medium", "labels": ["writing"]}
+{"task": "Help me write a compelling paragraph for my marketing job application.", "tier": "balanced", "effort": "medium", "labels": ["writing"]}
+{"task": "Why does the sky look blue?", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "What makes the sky appear blue?", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Give me the science behind the blue sky.", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Create an agenda for our 30-minute daily standup.", "tier": "balanced", "effort": "medium", "labels": ["calendar", "writing"]}
+{"task": "I need a 30-min team standup agenda.", "tier": "balanced", "effort": "medium", "labels": ["calendar", "writing"]}
+{"task": "Outline what we should cover in a half-hour standup meeting.", "tier": "balanced", "effort": "medium", "labels": ["calendar", "writing"]}
+{"task": "What are the advantages and disadvantages of renting versus buying?", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Rent or buy a home: weigh the pros and cons for me.", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Help me decide between renting and buying with a pros/cons breakdown.", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Give me a bash one-liner that finds the biggest file in a directory.", "tier": "balanced", "effort": "medium", "labels": ["code", "files"]}
+{"task": "Bash command to locate the largest file in a folder?", "tier": "balanced", "effort": "medium", "labels": ["code", "files"]}
+{"task": "How do I find the largest file in a directory with one bash line?", "tier": "balanced", "effort": "medium", "labels": ["code", "files"]}
+{"task": "How does a neural network learn, at a basic level?", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Explain neural network training for a beginner.", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "What happens when a neural network learns?", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "I need to give a toast at my sister's wedding. Help me write one.", "tier": "balanced", "effort": "medium", "labels": ["writing"]}
+{"task": "Write a heartfelt wedding toast for my sister.", "tier": "balanced", "effort": "medium", "labels": ["writing"]}
+{"task": "Draft a short, warm toast I can give at my sister's wedding.", "tier": "balanced", "effort": "medium", "labels": ["writing"]}
+{"task": "How can I deal with too many work emails?", "tier": "balanced", "effort": "medium", "labels": ["email"]}
+{"task": "My inbox is overwhelming. What strategies actually work?", "tier": "balanced", "effort": "medium", "labels": ["email"]}
+{"task": "Tips for taming email overload at the office?", "tier": "balanced", "effort": "medium", "labels": ["email"]}
+{"task": "What caused the French Revolution? A few paragraphs.", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Summarize the main causes of the French Revolution.", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Explain the roots of the French Revolution briefly.", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Write a JS function to check if an email address is valid.", "tier": "balanced", "effort": "medium", "labels": ["code", "email"]}
+{"task": "JavaScript email validation function, please.", "tier": "balanced", "effort": "medium", "labels": ["code", "email"]}
+{"task": "I need simple JavaScript code that validates emails.", "tier": "balanced", "effort": "medium", "labels": ["code", "email"]}
+{"task": "Suggest healthy dinners for a family of four for the week.", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Meal-plan a week of nutritious family dinners (4 people).", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "What should a family of four eat for dinner this week? Keep it healthy.", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "How does compound interest work? Show me with numbers.", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Explain compound interest with a concrete example.", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Walk me through compound interest using an example.", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Write a thank-you email to send after a job interview.", "tier": "balanced", "effort": "medium", "labels": ["email", "writing"]}
+{"task": "Draft a post-interview thank you note to the hiring panel.", "tier": "balanced", "effort": "medium", "labels": ["email", "writing"]}
+{"task": "I interviewed today; help me write a follow-up thank-you email.", "tier": "balanced", "effort": "medium", "labels": ["email", "writing"]}
+{"task": "Packing list for a week of hiking in the Rockies?", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "What gear do I need for seven days hiking in the Rockies?", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Help me pack for a week-long Rockies hiking trip.", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "TCP vs UDP: what's the practical difference?", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Explain TCP and UDP and when you'd use each.", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "How do the TCP and UDP protocols differ?", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "This Python script throws IndexError inside process_items() on empty input. Here's the traceback — what's the root cause and how do I fix it?", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "IndexError in process_items() when the list is empty — debug this Python crash from the traceback.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "Help me debug a Python IndexError: process_items() fails on empty lists. Traceback included.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "Our multithreaded order processor has a race condition: concurrent threads double-decrement inventory. How do I fix it with proper synchronization?", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "Two threads are racing on the same inventory counter in our order system. Design a thread-safe fix.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "Diagnose and fix a concurrency bug: duplicate inventory decrements under multithreaded load.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "Use mathematical induction to prove the formula for the sum of the first n integers.", "tier": "heavy", "effort": "high", "labels": []}
+{"task": "Prove 1+2+...+n = n(n+1)/2 by induction, showing each step.", "tier": "heavy", "effort": "high", "labels": []}
+{"task": "Induction proof that the sum of natural numbers 1 to n is n(n+1)/2.", "tier": "heavy", "effort": "high", "labels": []}
+{"task": "I'm about to sign an employment contract. Flag any legally risky clauses.", "tier": "heavy", "effort": "high", "labels": ["legal"]}
+{"task": "Review my job offer's contract terms for legal red flags.", "tier": "heavy", "effort": "high", "labels": ["legal"]}
+{"task": "Before I sign, assess the legal risks hidden in this employment agreement.", "tier": "heavy", "effort": "high", "labels": ["legal"]}
+{"task": "Audit this login system for security flaws: session fixation, token leaks, timing attacks. Recommend fixes.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "Security review of our auth flow — find vulnerabilities and propose mitigations.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "Where are the exploitable weaknesses in this authentication implementation? Provide a remediation plan.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "Architect a Redis-backed rate limiter for 100k rps across 10 services, resilient to clock skew and node failure.", "tier": "heavy", "effort": "high", "labels": ["code", "ops"]}
+{"task": "Design a distributed rate-limiting system handling 100k requests/sec with failover.", "tier": "heavy", "effort": "high", "labels": ["code", "ops"]}
+{"task": "How would you build a fault-tolerant distributed rate limiter for a 10-service fleet at 100k rps?", "tier": "heavy", "effort": "high", "labels": ["code", "ops"]}
+{"task": "Intermittent segfault in our C extension while parsing big JSON. The stack trace suggests a memory leak — help me track it down.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "Our C JSON parser segfaults sporadically on large payloads. Diagnose the memory corruption from the trace.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "Debug an intermittent segfault: C extension leaks memory parsing large JSON documents.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "Solve dy/dx = 3x^2 + 2x given y(0)=1, showing every integration step.", "tier": "heavy", "effort": "high", "labels": []}
+{"task": "Find y(x) for the differential equation dy/dx = 3x^2 + 2x with initial condition y(0) = 1.", "tier": "heavy", "effort": "high", "labels": []}
+{"task": "Work through this ODE step by step: dy/dx = 3x^2 + 2x, y(0) = 1.", "tier": "heavy", "effort": "high", "labels": []}
+{"task": "Break this 800-line God class into SOLID modules without changing behavior.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "Refactor an 800-line monolithic class into clean modules per SOLID, keeping behavior identical.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "This class is 800 lines and does everything. Restructure it following SOLID principles.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "A 55-year-old hypertensive man has persistent chest pain. Walk through the differential diagnosis.", "tier": "heavy", "effort": "high", "labels": ["medical"]}
+{"task": "What is the differential diagnosis for ongoing chest pain in a 55-year-old with high blood pressure?", "tier": "heavy", "effort": "high", "labels": ["medical"]}
+{"task": "Chest pain differential for a hypertensive 55-year-old male — be thorough.", "tier": "heavy", "effort": "high", "labels": ["medical"]}
+{"task": "Automate this: log into a web dashboard, page through dynamic tables, and export everything to CSV.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "Build a browser automation that handles login, infinite-scroll tables, and CSV export.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "Script a full browser workflow: authenticate, navigate paginated data grids, download as CSV.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "CRDTs vs operational transformation for a real-time collaborative editor — design the architecture.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "Architecture proposal: real-time multi-user document editing with conflict resolution.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "Design a collaborative editing backend: compare CRDT and OT approaches for consistency.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "Read this 40-page annual report and call out the three greatest solvency risks with citations.", "tier": "heavy", "effort": "high", "labels": ["files"]}
+{"task": "Deep-dive a 40-page financial filing: what are the top three threats to solvency?", "tier": "heavy", "effort": "high", "labels": ["files"]}
+{"task": "Analyze a lengthy financial report and pinpoint the biggest risks to the company staying solvent.", "tier": "heavy", "effort": "high", "labels": ["files"]}
+{"task": "Write a compiler optimization pass for constant folding over an AST with short-circuit semantics.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "Implement AST constant folding in a compiler, correctly handling nested and short-circuit expressions.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "Compiler task: fold constants in an AST while preserving short-circuit evaluation behavior.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "My agent chains MCP tool calls and needs retry/fallback logic. Design a robust orchestration loop.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "Design an agent loop that sequences MCP tool invocations with error recovery and retries.", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "How should an AI agent orchestrate sequential tool calls with fallbacks when tools fail?", "tier": "heavy", "effort": "high", "labels": ["code"]}
+{"task": "What is 9 * 7?", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Summarize this product description in one line for a catalog listing.", "tier": "economy", "effort": "low", "labels": ["summarize"]}
+{"task": "When is Mother's Day this year?", "tier": "economy", "effort": "low", "labels": ["calendar"]}
+{"task": "Translate 'thank you very much' to French.", "tier": "economy", "effort": "low", "labels": []}
+{"task": "Explain the water cycle to a curious 8-year-old.", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Write a SQL query that finds duplicate email addresses in a users table.", "tier": "balanced", "effort": "medium", "labels": ["code", "email"]}
+{"task": "Draft a LinkedIn post announcing my promotion to senior analyst.", "tier": "balanced", "effort": "medium", "labels": ["writing"]}
+{"task": "How do I troubleshoot a Wi-Fi printer that won't connect?", "tier": "balanced", "effort": "medium", "labels": []}
+{"task": "Evaluate the integral of x*e^x dx using integration by parts, showing all steps.", "tier": "heavy", "effort": "high", "labels": []}
+{"task": "My startup's terms of service may violate new state privacy compliance rules. Assess the exposure.", "tier": "heavy", "effort": "high", "labels": ["legal"]}

@@ -14,6 +14,7 @@ and return plain floats / dicts of floats.
 
 from __future__ import annotations
 
+import math
 from typing import Dict, List, Sequence
 
 import numpy as np
@@ -24,6 +25,10 @@ __all__ = [
     "nll_score",
     "aurc",
     "selective_accuracy",
+    "coverage_at_error",
+    "risk_coverage_curve",
+    "select_threshold",
+    "evaluate_threshold",
     "summarize",
     "format_table",
 ]
@@ -134,6 +139,100 @@ def selective_accuracy(
     return float((pred[order] == y[order]).mean())
 
 
+def _risk_curve_arrays(
+    y_true: Sequence[int], proba: Sequence[Sequence[float]]
+) -> tuple:
+    """Whole-confidence-group risk curve, ported from Kev (kev/metrics.py).
+
+    Sort by confidence descending; rows sharing a confidence threshold
+    move as one group (ties are never split). Returns (thresholds,
+    accepted_counts, error_counts) with accepted[-1] == n.
+    """
+    y, P = _arrays(y_true, proba)
+    conf = P.max(axis=1)
+    order = np.argsort(-conf, kind="stable")
+    conf = conf[order]
+    errors = np.cumsum((P[order].argmax(axis=1) != y[order]).astype(int))
+    ends = np.r_[np.flatnonzero(conf[1:] != conf[:-1]), len(order) - 1]
+    return conf[ends], ends + 1, errors[ends]
+
+
+def coverage_at_error(
+    y_true: Sequence[int],
+    proba: Sequence[Sequence[float]],
+    budget: float,
+) -> float:
+    """Largest acceptable decision share at a fixed error budget.
+
+    In descending confidence order, the biggest prefix whose empirical
+    error stays <= budget (Kev's metric-policy: an in-sample maximum
+    over confidence thresholds, not a deployed error guarantee).
+    Honest probabilities get high coverage; confidently-wrong gets
+    little, whatever the accuracy.
+    """
+    if not math.isfinite(budget) or not 0 <= budget <= 1:
+        raise ValueError("error budget must be in [0, 1]")
+    _, accepted, errors = _risk_curve_arrays(y_true, proba)
+    ok = np.flatnonzero(errors <= budget * accepted)
+    return float(accepted[ok[-1]] / accepted[-1]) if len(ok) else 0.0
+
+
+def risk_coverage_curve(
+    y_true: Sequence[int], proba: Sequence[Sequence[float]]
+) -> List[Dict[str, float]]:
+    """Risk/coverage at every whole-confidence-group threshold."""
+    thresholds, accepted, errors = _risk_curve_arrays(y_true, proba)
+    total = int(accepted[-1])
+    return [
+        {"threshold": float(t), "accepted": int(n), "errors": int(e),
+         "coverage": float(n / total), "risk": float(e / n)}
+        for t, n, e in zip(thresholds, accepted, errors)
+    ]
+
+
+def select_threshold(
+    y_true: Sequence[int],
+    proba: Sequence[Sequence[float]],
+    budget: float,
+    min_accepted: int = 1,
+) -> float | None:
+    """Highest-coverage confidence threshold within an error budget.
+
+    Returns None when no threshold accepts >= min_accepted decisions
+    within budget (the caller abstains on everything).
+    """
+    if not math.isfinite(budget) or not 0 <= budget <= 1 \
+            or min_accepted < 1:
+        raise ValueError("invalid error budget or minimum accepted count")
+    thresholds, accepted, errors = _risk_curve_arrays(y_true, proba)
+    ok = np.flatnonzero(
+        (errors <= budget * accepted) & (accepted >= min_accepted))
+    return float(thresholds[ok[-1]]) if len(ok) else None
+
+
+def evaluate_threshold(
+    y_true: Sequence[int],
+    proba: Sequence[Sequence[float]],
+    threshold: float | None,
+) -> Dict[str, float | None]:
+    """Coverage/risk of accepting decisions at confidence >= threshold.
+
+    threshold=None means abstain-all.
+    """
+    if threshold is not None and (
+            not math.isfinite(threshold) or not 0 <= threshold <= 1):
+        raise ValueError("threshold must be in [0, 1] or None for abstain-all")
+    y, P = _arrays(y_true, proba)
+    conf = P.max(axis=1)
+    accepted = conf >= threshold if threshold is not None else \
+        np.zeros(len(y), dtype=bool)
+    n = int(accepted.sum())
+    errors = int(((P.argmax(axis=1) != y) & accepted).sum())
+    return {"threshold": threshold, "n": float(len(y)),
+            "accepted": float(n), "errors": float(errors),
+            "coverage": n / len(y), "risk": errors / n if n else None}
+
+
 def summarize(
     y_true: Sequence[int],
     proba: Sequence[Sequence[float]],
@@ -142,8 +241,9 @@ def summarize(
     """One-row metric summary (decider's `summarize` convention).
 
     Returns {"name", "n", "accuracy", "ece_15", "brier", "nll", "aurc",
-    "sel_acc@50", "sel_acc@80", "sel_acc@100"} — higher is better for
-    accuracy / sel_acc, lower is better for ece_15 / brier / nll / aurc.
+    "sel_acc@50", "sel_acc@80", "sel_acc@100", "cov@5%", "cov@1%"} —
+    higher is better for accuracy / sel_acc / cov, lower is better for
+    ece_15 / brier / nll / aurc.
     """
     y, P = _arrays(y_true, proba)
     pred = P.argmax(axis=1)
@@ -158,6 +258,8 @@ def summarize(
         "sel_acc@50": selective_accuracy(y, P, 0.50),
         "sel_acc@80": selective_accuracy(y, P, 0.80),
         "sel_acc@100": selective_accuracy(y, P, 1.00),
+        "cov@5%": coverage_at_error(y, P, 0.05),
+        "cov@1%": coverage_at_error(y, P, 0.01),
     }
 
 
@@ -172,6 +274,8 @@ _SUMMARY_COLS = [
     ("sel_acc@50", "s@50", "{:.3f}"),
     ("sel_acc@80", "s@80", "{:.3f}"),
     ("sel_acc@100", "s@100", "{:.3f}"),
+    ("cov@5%", "cov5%", "{:.3f}"),
+    ("cov@1%", "cov1%", "{:.3f}"),
 ]
 
 

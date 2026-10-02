@@ -265,19 +265,32 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 def cmd_jevbench(args: argparse.Namespace) -> int:
     """Score a JevBench jsonl split with a SystemOne engine."""
-    from .jevbench import run_file
-    from .shim import create_engine
+    from .jevbench import run_file, run_remote
 
-    try:
-        engine = create_engine(getattr(args, "engine", None))
-    except Exception as exc:
-        print(f"error: cannot build engine — {exc}", file=sys.stderr)
-        return 1
-    try:
-        summary = run_file(args.items, engine, out=args.out, limit=args.limit)
-    except OSError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+    if getattr(args, "remote", None):
+        try:
+            summary = run_remote(
+                args.items, args.remote, out=args.out, limit=args.limit,
+                model=getattr(args, "remote_model", "") or "",
+                concurrency=getattr(args, "concurrency", 1) or 1,
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+    else:
+        from .shim import create_engine
+
+        try:
+            engine = create_engine(getattr(args, "engine", None))
+        except Exception as exc:
+            print(f"error: cannot build engine — {exc}", file=sys.stderr)
+            return 1
+        try:
+            summary = run_file(args.items, engine, out=args.out,
+                               limit=args.limit)
+        except OSError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
     if args.json:
         _print_json(summary)
         return 0
@@ -528,8 +541,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_jevbench.add_argument("--limit", type=int, default=None,
                             help="score at most N items")
     p_jevbench.add_argument("--engine", default=None,
-                            choices=("auto", "local", "sglang", "jevk5", "onnx", "jev"),
+                            choices=("auto", "local", "sglang", "jevk5", "onnx", "jev", "kev"),
                             help="engine (default: $SYSTEMONE_ENGINE or auto)")
+    p_jevbench.add_argument("--remote", default=None, metavar="BASE_URL",
+                            help="score a remote /v1/systemone endpoint "
+                            "instead of a local engine (kev --remote style)")
+    p_jevbench.add_argument("--remote-model", default="",
+                            help="model name sent to --remote")
+    p_jevbench.add_argument("--concurrency", type=int, default=1,
+                            help="requests in flight against --remote")
     p_jevbench.add_argument("--json", action="store_true",
                             help="emit the raw summary as JSON")
     p_jevbench.set_defaults(func=cmd_jevbench)
@@ -565,7 +585,7 @@ def build_parser() -> argparse.ArgumentParser:
                          help="decision sidecar port (default 8079)")
     p_serve.add_argument(
         "--engine", default=None,
-        choices=("auto", "local", "sglang", "jevk5", "onnx", "jev"),
+        choices=("auto", "local", "sglang", "jevk5", "onnx", "jev", "kev"),
         help="decision engine to serve (default: $SYSTEMONE_ENGINE or auto)")
     p_serve.set_defaults(func=cmd_serve)
 

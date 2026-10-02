@@ -23,3 +23,8 @@ torch>=2.0
 transformers>=4.40
 huggingface_hub>=0.20
 gliclass @ git+https://github.com/Franzferdinan51/GLiClass
+#
+# MCP stdio server extra (matches upstream `systemone[mcp]`; only needed
+# to run `python -m systemone.mcp_server`):
+# mcp<2
+# pyjwt>=2.15

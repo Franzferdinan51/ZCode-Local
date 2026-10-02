@@ -11,10 +11,10 @@ systemone serve --port 8765 --engine auto      # preferred (needs `systemone` on
 python3.11 -m systemone.shim --port 8765       # fallback; cwd: the ZCode release root
 ```
 
-`--engine` accepts `auto|local|sglang|jevk5|onnx|jev` (default: the
+`--engine` accepts `auto|local|sglang|jevk5|onnx|jev|kev` (default: the
 `SYSTEMONE_ENGINE` env var, else `auto`). Served endpoints: `GET
 /,/healthz,/openapi.json,/metrics,/v1/decide/info` and `POST
-/v1/systemone,/v1/decisions,/v1/decide,/v1/systemone/route,/v1/systemone/rank-plans,/v1/systemone/decide`.
+/v1/systemone,/v1/decisions,/v1/decide,/v1/systemone/route,/v1/systemone/rank-plans,/v1/systemone/decide,/v1/systemone/permute`.
 
 A shim already listening on :8765 (for example a manually managed one)
 is used as-is and never duplicated. If the shim can't be started, ZCode

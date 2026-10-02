@@ -10,7 +10,7 @@
 // (`<release>/systemone`, the `systemone` Python package) as a detached
 // background process:
 //
-//   systemone serve --port 8765 [--engine auto|local|sglang|jevk5|onnx|jev]
+//   systemone serve --port 8765 [--engine auto|local|sglang|jevk5|onnx|jev|kev]
 // (preferred when the `systemone` console script is on PATH; the engine
 // flag defaults to $SYSTEMONE_ENGINE, else auto), else:
 //
@@ -38,7 +38,7 @@
 //                            http://127.0.0.1:8765); remote URLs are
 //                            never auto-started
 //   SYSTEMONE_ENGINE         engine the spawned shim serves
-//                            (auto|local|sglang|jevk5|onnx|jev)
+//                            (auto|local|sglang|jevk5|onnx|jev|kev)
 
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -246,7 +246,12 @@ export function requiredShimImports(
   try {
     const engine = (env.SYSTEMONE_ENGINE ?? "auto").trim().toLowerCase();
     if (engine === "onnx") return ["numpy", "onnxruntime"];
-    if (engine === "sglang" || engine === "jevk5" || engine === "jev") {
+    if (
+      engine === "sglang" ||
+      engine === "jevk5" ||
+      engine === "jev" ||
+      engine === "kev"
+    ) {
       return ["numpy"];
     }
     if (engine === "local") return ["numpy", "gliclass"];
@@ -255,7 +260,8 @@ export function requiredShimImports(
     const remoteConfigured =
       (env.JEV_URL ?? "").trim() !== "" ||
       (env.SGLANG_BASE_URL ?? "").trim() !== "" ||
-      (env.JEVK5_BASE_URL ?? "").trim() !== "";
+      (env.JEVK5_BASE_URL ?? "").trim() !== "" ||
+      (env.KEV_BASE_URL ?? "").trim() !== "";
     return remoteConfigured ? ["numpy"] : ["numpy", "gliclass"];
   } catch {
     return ["numpy", "gliclass"];

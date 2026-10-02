@@ -14,9 +14,8 @@ position — no text is generated, no output is parsed. That buys three
 things the local GLiClass engine cannot do:
 
 * **Bigger judges** — route hard calls to a 27B-class model while trivial
-  calls stay on the tiny local engine.
-* **Multimodal decisions** — pass screenshots (or any image) alongside the
-  state text when the served model is a VLM.
+  calls stay on the tiny local engine (multimodal decisions need
+  SYSTEMONE_ENGINE=jev with a VLM — /v1/decisions itself is text-only).
 * **Prefix-cache speed** — ``/v1/decisions`` is prefill-only, so a stable
   prompt prefix is served from SGLang's RadixAttention KV cache; sub-100ms
   decisions are architecturally plausible on a decent GPU.
@@ -36,34 +35,47 @@ Serve SGLang with e.g.:
     python -m sglang.launch_server --model-path Qwen/Qwen3.8-27B \
         --host 127.0.0.1 --port 30000
 
-Schema notes (SGLang ``/v1/decisions``, docs.sglang.io, 2026-09-30):
-    request:  {"input": str,
-               "questions": [{"id": str, "type": "choice"|"score"|"yes_no",
-                              "question": str,
-                              "options": [{"name": str}, ...] |  (choice)
-                              "levels": [{"name": str}, ...]}]} (score)
-    choice supports 2-26 options (beyond 26 SGLang switches to two-letter
-    labels with order-dependent priors — we refuse >26 rather than let
-    calibration silently rot). score supports 2-10 levels.
-    response: {"answers": {id: {"type": ..., "probabilities": {...},
-               "choice": <argmax> | "score": <prob-weighted mean>,
-               "label_mass": <full-vocab label probability>}}, ...}
+Schema notes (SGLang ``/v1/decisions``, verified 2026-10-02 against
+sglang main ``python/sglang/srt/entrypoints/openai/{protocol,serving_decisions}.py``):
+    request:  {"input": str (non-blank),
+               "questions": [{"id": str (non-blank, distinct),
+                              "type": "choice"|"score"|"yes_no",
+                              "question": str (non-blank),
+                              "options": [{"name": str, "description"?: ...}, ...] |  (choice)
+                              "levels": [str, ...]}]}                             (score)
+    choice supports 2-26 options (A-Z single-token labels; /v1/decisions
+    refuses more — the two-letter scheme past 26 exists only on SGLang's
+    /v1/systemone route). score supports 2-10 levels, sent as BARE
+    strings; the server renders dicts as compact JSON, so {"name": ...}
+    items would corrupt the prompt.
+    option names must be non-blank, free of control/line-break chars,
+    and distinct case-insensitively (mirrored client-side).
+    response: {"object": "decisions", "model": str,
+               "prompt_format_version": int,
+               "answers": {id: {"type": ..., "probabilities": {...},
+               "choice": <argmax name> | "score": <index-weighted mean>,
+               "label_mass": <full-vocab label probability>}},
+               "usage": {"prompt_tokens": ..., "total_tokens": ...}}
+    score probabilities are keyed by LEVEL INDEX ("0"-"9"), not by level
+    name — remapped positionally onto the caller's levels here.
+    yes_no answers carry probabilities {"yes": p, "no": 1-p} (no
+    "probability"/"answer" keys upstream).
     ``label_mass`` is the uncertainty signal: a low value means the model
-    wanted an out-of-vocabulary answer. We surface it on every answer.
+    wanted an out-of-vocabulary answer. We surface it on every answer,
+    plus ``prompt_format_version``/``usage`` in ``_meta``.
 
 Calibration caveat: SGLang's probabilities can drift ~0.07 between cold
 and prefix-cached requests. For the calibration battery, either pin the
 cache state or quantify the drift before comparing against decider-4b.
 
-Version status (verified 2026-09-30): /v1/decisions and /v1/systemone are
-main-branch/nightly only — not in any tagged SGLang release (newest PyPI
-was 0.5.20). Pin a nightly build; re-check before relying on a release.
+Version status (verified 2026-10-02): /v1/decisions and /v1/systemone are
+main-branch only — not in any tagged SGLang release. Pin a nightly
+build; re-check before relying on a release.
 
-Image input is UNVERIFIED: the decisions docs describe `input` as
-string/object/array rendered as compact JSON, with no image path (the
-Pokemon demo's "live game state" was structured data, not screenshots).
-`images=` sends OpenAI-style content parts anyway, but confirm against a
-live nightly server before depending on it.
+Image input is CONFIRMED UNSUPPORTED upstream: `input` is
+string/object/array rendered as compact JSON, with no image path, so
+`images=` is dropped (reported in ``_meta["media_dropped"]``) and only
+the state text is sent. Point SYSTEMONE_ENGINE=jev at a VLM for images.
 """
 
 from __future__ import annotations
@@ -73,6 +85,7 @@ import json
 import math
 import os
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Sequence
@@ -146,6 +159,40 @@ def _option_names(options: Sequence[Any]) -> List[str]:
         else:
             names.append(str(o))
     return names
+
+
+def check_option_names(names: Sequence[str], *, what: str = "option") -> None:
+    """Mirror SGLang's ``check_option_names`` (protocol.py) client-side.
+
+    Names must be non-blank, free of control/line-break characters (each
+    option renders as one prompt line), and distinct case-insensitively.
+    Fail fast here so a mis-shaped call never pays a server round-trip.
+    """
+    seen = set()
+    for name in names:
+        if not isinstance(name, str):
+            raise SGLangError(
+                f"{what} names must be strings, got {type(name).__name__}",
+                hint="pass a list of strings (or {'name': ...} mappings)",
+            )
+        key = name.strip().casefold()
+        if not key:
+            raise SGLangError(
+                f"{what} names must be nonempty",
+                hint="drop the blank entry",
+            )
+        if any(unicodedata.category(c) in ("Cc", "Zl", "Zp") for c in name):
+            raise SGLangError(
+                f"{what} name {name!r} must not contain control or "
+                "line break characters",
+                hint="each option renders as one prompt line upstream",
+            )
+        if key in seen:
+            raise SGLangError(
+                f"{what} name {name!r} repeats another option",
+                hint="names must be distinct (case-insensitive)",
+            )
+        seen.add(key)
 
 
 class SGLangBackend:
@@ -237,6 +284,11 @@ class SGLangBackend:
         out: List[Dict[str, Any]] = []
         for q in questions:
             name = q.get("name", "q")
+            if not isinstance(name, str) or not name.strip():
+                raise SGLangError(
+                    f"question id must be a non-blank string, got {name!r}",
+                    hint="/v1/decisions refuses blank ids ('must not be blank')",
+                )
             qtype = q.get("type")
             if qtype == "choice":
                 options = list(q.get("options") or [])
@@ -246,29 +298,44 @@ class SGLangBackend:
                         hint=f"/v1/decisions supports "
                         f"{_MIN_CHOICE_OPTIONS}-{_MAX_CHOICE_OPTIONS} options",
                     )
+                names = _option_names(options)
+                check_option_names(names)
                 prompt = q.get("prompt") or (
                     "Choose the best option for the input above."
                 )
+                wire_options: List[Dict[str, Any]] = []
+                for raw, nm in zip(options, names):
+                    item: Dict[str, Any] = {"name": nm}
+                    if isinstance(raw, dict) and raw.get("description") is not None:
+                        item["description"] = raw["description"]
+                    wire_options.append(item)
                 out.append({
                     "id": name,
                     "type": "choice",
                     "question": prompt,
-                    "options": [{"name": o} for o in options],
+                    "options": wire_options,
                 })
             elif qtype == "score":
-                levels = list(q.get("levels") or [])
+                levels = _option_names(list(q.get("levels") or []))
                 if not (_MIN_SCORE_LEVELS <= len(levels) <= _MAX_SCORE_LEVELS):
                     raise SGLangError(
                         f"score question {name!r} has {len(levels)} levels",
                         hint=f"/v1/decisions supports "
                         f"{_MIN_SCORE_LEVELS}-{_MAX_SCORE_LEVELS} levels",
                     )
+                if any(not lv.strip() for lv in levels):
+                    raise SGLangError(
+                        f"score question {name!r} has a blank level",
+                        hint="/v1/decisions levels must not be blank",
+                    )
                 prompt = q.get("prompt") or "Rate the input above."
                 out.append({
                     "id": name,
                     "type": "score",
                     "question": prompt,
-                    _SCORE_LEVELS_KEY: [{"name": lv} for lv in levels],
+                    # Bare strings: the server renders dicts as compact
+                    # JSON, so {"name": ...} items would corrupt the prompt.
+                    _SCORE_LEVELS_KEY: levels,
                 })
             elif qtype == "noul":
                 statement = q.get("statement") or q.get("prompt") or ""
@@ -296,21 +363,15 @@ class SGLangBackend:
     def _build_input(
         self, state: str, images: Sequence[str] | None
     ) -> Any:
-        """State text (+ optional images) -> /v1/decisions input.
+        """State text -> /v1/decisions input.
 
-        Plain string when text-only. When images are provided (URLs or
-        data URIs), OpenAI-style content parts — EXPERIMENTAL: the
-        decisions docs describe no image path (input is string/object/array
-        rendered as compact JSON), so verify against a live nightly server
-        before relying on it. The parts form is only used when images are
-        present.
+        Always the plain state string: /v1/decisions has no image path
+        (input is string/object/array rendered as compact JSON), so
+        `images` are dropped and reported in ``_meta["media_dropped"]``
+        instead of being sent as content parts the server would render
+        as JSON text.
         """
-        if not images:
-            return state
-        parts: List[Dict[str, Any]] = [{"type": "text", "text": state}]
-        for img in images:
-            parts.append({"type": "image_url", "image_url": {"url": img}})
-        return parts
+        return state
 
     # -- main entry point ------------------------------------------------
     def systemone(
@@ -322,17 +383,25 @@ class SGLangBackend:
     ) -> Dict[str, Any]:
         """Answer typed questions about `state` via SGLang /v1/decisions.
 
-        Question shapes are identical to api.SystemOne.systemone; `images`
-        optionally carries image URLs / data URIs (experimental — the
-        endpoint's image support is undocumented; verify live first).
-        `videos` is accepted for protocol uniformity and reported in
-        ``_meta["media_dropped"]`` (/v1/decisions has no video path).
+        Question shapes are identical to api.SystemOne.systemone; choice
+        options may be bare strings or {"name", "description"?} mappings
+        (descriptions are forwarded), score levels may likewise be bare
+        strings or {"name"} mappings (sent as bare strings — the server
+        renders dicts as JSON). `images`/`videos` are accepted for
+        protocol uniformity and reported in ``_meta["media_dropped"]``
+        (/v1/decisions has no media path).
         Returns {name: answer_dict, ..., "_meta": {...}} with the same
-        answer shapes as the local engine, plus "label_mass" per answer.
+        answer shapes as the local engine, plus "label_mass" per answer
+        and the server's prompt_format_version/usage in "_meta".
         """
         questions = list(questions)
         if not questions:
             raise SGLangError("questions must be non-empty")
+        if not isinstance(state, str) or not state.strip():
+            raise SGLangError(
+                "state must be a non-blank string",
+                hint="/v1/decisions refuses blank input ('must not be blank')",
+            )
         if len(state) > 6000:
             state = state[:6000]
 
@@ -361,9 +430,9 @@ class SGLangBackend:
         label_lists: Dict[str, List[str]] = {}
         for q in questions:
             if q["type"] == "choice":
-                label_lists[q["name"]] = list(q["options"])
+                label_lists[q["name"]] = _option_names(list(q["options"]))
             elif q["type"] == "score":
-                label_lists[q["name"]] = list(q["levels"])
+                label_lists[q["name"]] = _option_names(list(q["levels"]))
             else:
                 label_lists[q["name"]] = ["yes", "no"]
 
@@ -391,10 +460,21 @@ class SGLangBackend:
                     "label_mass": label_mass,
                 }
             elif qtype == "score":
-                probs = {k: float(v) for k, v in (ans.get("probabilities") or {}).items()}
+                raw = {k: float(v) for k, v in (ans.get("probabilities") or {}).items()}
+                # Upstream keys score probabilities by level INDEX
+                # ("0"-"9"); remap positionally onto the caller's levels.
+                missing = [str(i) for i in range(len(labs)) if str(i) not in raw]
+                if missing:
+                    raise SGLangError(
+                        f"SGLang answer for {name!r} lacks level keys "
+                        f"{missing}",
+                        hint="expected index-keyed probabilities "
+                        "('0'-'9') per /v1/decisions",
+                    )
+                probs = {lv: raw[str(i)] for i, lv in enumerate(labs)}
                 best = max(probs, key=probs.get) if probs else None
                 _check_distribution(probs, labs, best)
-                # SGLang's prob-weighted mean, when provided; else argmax index.
+                # SGLang's index-weighted mean, when provided; else argmax index.
                 wmean = ans.get("score")
                 if not isinstance(wmean, (int, float)):
                     wmean = float(labs.index(best)) if best in labs else 0.0
@@ -409,11 +489,11 @@ class SGLangBackend:
                     "legend": dict(q.get("legend") or {}),
                 }
             else:  # noul <- yes_no
-                p_yes = ans.get("probability")
+                # Upstream shape: probabilities {"yes": p, "no": 1-p}.
+                probs = (ans.get("probabilities") or {})
+                p_yes = probs.get("yes", ans.get("probability", 0.5))
                 if not isinstance(p_yes, (int, float)):
-                    # Fallback: some servers return a yes/no distribution.
-                    probs = (ans.get("probabilities") or {})
-                    p_yes = float(probs.get("yes", 0.5))
+                    p_yes = 0.5
                 p_yes = float(p_yes)
                 answers[name] = {
                     "type": "noul",
@@ -431,10 +511,18 @@ class SGLangBackend:
             "latency_ms": round(latency_ms, 1),
             "state_chars": len(state),
         }
-        if videos:
+        if payload.get("prompt_format_version") is not None:
+            answers["_meta"]["prompt_format_version"] = payload[
+                "prompt_format_version"
+            ]
+        if isinstance(payload.get("usage"), dict):
+            answers["_meta"]["usage"] = dict(payload["usage"])
+        dropped_images = len(list(images or []))
+        dropped_videos = len(list(videos or []))
+        if dropped_images or dropped_videos:
             answers["_meta"]["media_dropped"] = {
-                "images": 0,
-                "videos": len(list(videos)),
+                "images": dropped_images,
+                "videos": dropped_videos,
             }
         return answers
 
@@ -452,7 +540,7 @@ class SGLangBackend:
         operation; only the head selected by the chosen operation is used.
         """
         op_name = operation.get("name", "operation")
-        op_options = list(operation["options"])
+        op_options = _option_names(list(operation["options"]))
         questions: List[Dict[str, Any]] = [operation]
         for op in op_options:
             if op in targets:
@@ -472,7 +560,7 @@ class SGLangBackend:
         if op_choice in targets:
             tq = targets[op_choice]
             t_name = tq.get("name", f"{op_choice}_target")
-            t_options = list(tq["options"])
+            t_options = _option_names(list(tq["options"]))
             t_answer = answers[t_name]
             _check_distribution(
                 t_answer["probabilities"], t_options, t_answer["choice"]
