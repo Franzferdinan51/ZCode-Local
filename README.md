@@ -104,8 +104,9 @@ fail-open, and lives in the Python shim (`systemone serve --port 8765`,
 or `python -m systemone.shim`, at `http://127.0.0.1:8765`, overridable
 with `SYSTEMONE_SHIM_URL`). The shim serves route, rank-plans, and typed
 decide endpoints (`/v1/systemone/{route,rank-plans,decide}` plus the Jev
-`/v1/systemone`) on engines `auto|local|sglang|jevk5|onnx|jev|kev`
-(`SYSTEMONE_ENGINE`). Details: https://github.com/Franzferdinan51/SystemOne.
+`/v1/systemone`) on engines `auto|local|sglang|jevk5|onnx|jev|kev|clef`
+(`SYSTEMONE_ENGINE`; `clef` runs Cloudflare's clef/clef-flash weights
+locally). Details: https://github.com/Franzferdinan51/SystemOne.
 
 Decider-backed plan ranking: `plan-execute` asks the shim for N
 candidate plans and posts them to `/v1/systemone/rank-plans`, executing the
@@ -126,9 +127,9 @@ never loads, unloads, switches, or competes with the loaded worker model.
   registry models ordered by expected utility. The model target now takes the
   top-ranked model as its pick (no hard-coded IDs — the ID always comes from
   the shim), falling back to `route.model_id` when the field is absent.
-- **`zcode decide`:** the decide engine is callable directly, with no extra
+- **`zcode-local decide`:** the decide engine is callable directly, with no extra
   setup — the bundled shim starts as usual:
-  `zcode decide --type choice|score|noul --state "..." --instructions "..."
+  `zcode-local decide --type choice|score|noul --state "..." --instructions "..."
   [--criteria label=description ...] [--gold label] [--json] [--timeout-ms N]`.
   Choice takes labeled alternatives, `noul` is plain yes/no (no criteria),
   `score` requires labels `0..n-1`. A down shim prints a clear error and
@@ -148,6 +149,24 @@ never loads, unloads, switches, or competes with the loaded worker model.
   ("SystemOne shim unreachable; continuing without routing (fail-open)")
   replaces the old debug-only note — unless `ZCODE_SYSTEMONE=0`
   intentionally disables SystemOne.
+- **Route controls (shim 0.2.0):** the route client sends validated
+  `sort` (`utility|quality|cost|latency`), `fallbacks` (0–8), and
+  `explore` (0–1) parameters and parses the response's ordered
+  `fallbacks` failover model IDs plus the `explored` flag. Unknown or
+  out-of-range values are dropped client-side (the shim would 400);
+  absent fields on older shims mean "not present", never an error.
+- **Roomy effort budgets:** per-tier step/tool-call budgets are
+  deliberately generous so long tasks converge — low 60/150, medium
+  120/300, high 250/600, xhigh 500/1200, ultra 1000/2500, with
+  tier-scaled subagent turns (8–64). Override per dimension without a
+  release via `ZCODE_EFFORT_<TIER>_MAX_STEPS` /
+  `ZCODE_EFFORT_<TIER>_MAX_TOOL_CALLS` / `..._SUBAGENT_MAX_TURNS` or the
+  `ZCODE_BUDGET_*` surface.
+- **Local search fallback:** WebSearch is provider-native when the model
+  supports it; otherwise (local Ollama / LM Studio builds) it falls
+  back to a local SearXNG at `http://127.0.0.1:8888` (override with
+  `ZCODE_SEARXNG_URL`). A down SearXNG keeps the original "model does
+  not support native WebSearch" error — the fallback never throws.
 
 Kill switches (each disables only its own surface; all default on):
 
@@ -200,10 +219,10 @@ tarballs / `~/.zcode-local/runtime/releases/` installs). Dev and
 packaging requirements (Git, Node 24.14.0, pnpm 10.33.2 via mise) are
 under Setup above.
 
-**First time?** Run `zcode onboard` — the guided first-run wizard checks
+**First time?** Run `zcode-local onboard` — the guided first-run wizard checks
 these requirements, probes LM Studio and the SystemOne router, optionally
 stores a Meta API key, and writes your initial config. It also runs
-automatically on first interactive launch of `zcode tui` (skip with
+automatically on first interactive launch of `zcode-local tui` (skip with
 `--skip-onboarding` or `ZCODE_SKIP_ONBOARDING=1`).
 
 The wizard probes the shim URL you give it (default
@@ -238,7 +257,7 @@ automatically (explicit env vars still win): `ZCODE_SYSTEMONE=0` /
   Mac mini (M4 Pro, 24 GB) reaching them over LM Link.
 - **SystemOne agent-flow routing (on by default)** — ZCode queries the
   router at `http://127.0.0.1:8765` (bundled under the release's
-  `systemone/` directory, systemone 0.1.0: `pip install -r
+  `systemone/` directory, systemone 0.2.0: `pip install -r
   systemone/requirements.txt` — `numpy>=1.24` slim base plus the
   torch/GLiClass `local` extra; the GLiClass checkpoint downloads on
   first start; needs Python >= 3.10). ZCode auto-starts the bundled shim
