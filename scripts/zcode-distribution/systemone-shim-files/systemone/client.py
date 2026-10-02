@@ -153,6 +153,25 @@ class SystemOneClient:
             "POST", "/v1/systemone/rank-plans", {"task": task, "plans": plans}
         )
 
+    def permute(
+        self,
+        state: Any,
+        question: Dict[str, Any],
+        n_perm: int = 8,
+        seed: int = 0,
+    ) -> Dict[str, Any]:
+        """POST /v1/systemone/permute — one choice under n_perm orders.
+
+        question: TypeSafe choice question. Returns {"runs",
+        "argmax_stable", "spread", ...}.
+        """
+        return self._request(
+            "POST",
+            "/v1/systemone/permute",
+            {"state": state, "question": question,
+             "n_perm": n_perm, "seed": seed},
+        )
+
     def decisions(
         self,
         input: Any,
@@ -162,9 +181,12 @@ class SystemOneClient:
         """POST /v1/decisions — batched typed questions, SGLang dialect.
 
         questions: [{"id": str, "type": "choice"|"score"|"yes_no",
-        "question": str, "options"/"levels": [{"name": str}, ...]}].
-        input: state text (or OpenAI-style content parts; image parts are
-        noted-and-skipped by the local engine). Returns {"answers": {...}}.
+        "question": str, "options": [{"name": str}, ...] |
+        "levels": [str, ...]}]. Score probabilities come back keyed by
+        level index ("0"-"9"); yes_no answers carry probabilities
+        {"yes", "no"}. input: state text (image parts are
+        noted-and-skipped: the endpoint is text-only upstream).
+        Returns {"answers": {...}}.
         """
         body: Dict[str, Any] = {"input": input, "questions": questions}
         if model:

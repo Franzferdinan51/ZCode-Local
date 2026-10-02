@@ -15,7 +15,7 @@ the modules.
 | `sglang_backend.py` | stdlib | `SGLangBackend` (`/v1/decisions` client) + `HybridBackend` (local-first, SGLang escalation) + `decide_fn_for` (loop adapter) |
 | `jev_backend.py` | stdlib | `JevDecideBackend`: JEV decision models over `POST /v1/decide` + System 2 chat |
 | `loop.py` | stdlib | `DecisionLoop`: the one See > Decide > Act agent loop |
-| `shim.py` | stdlib + numpy (+ local for GLiClass mode) | HTTP server: `POST /v1/systemone`, `/v1/decisions`, `/v1/decide`, `/v1/systemone/route`, `/v1/systemone/rank-plans`, `/v1/systemone/decide`; `GET /healthz`, `/metrics`, `/openapi.json`, `/v1/decide/info`. Engine via `SYSTEMONE_ENGINE=auto\|local\|sglang\|jevk5\|onnx\|jev` |
+| `shim.py` | stdlib + numpy (+ local for GLiClass mode) | HTTP server: `POST /v1/systemone`, `/v1/decisions`, `/v1/decide`, `/v1/systemone/route`, `/v1/systemone/rank-plans`, `/v1/systemone/decide`, `/v1/systemone/permute`; `GET /healthz`, `/metrics`, `/openapi.json`, `/v1/decide/info`. Engine via `SYSTEMONE_ENGINE=auto\|local\|sglang\|jevk5\|onnx\|jev\|kev` |
 | `client.py` | stdlib | `SystemOneClient`: HTTP client for the shim |
 | `cli.py` | stdlib + numpy (+ local for `local`/`ask`) | `systemone` command: `route` / `decide` / `status` / `battery` via shim, `local` / `ask` / `serve` on-box |
 | `jeff1_sidecar.py` | decider-ai (+ torch via it) | decision sidecar serving the decider-4b backend on `:8079` |
