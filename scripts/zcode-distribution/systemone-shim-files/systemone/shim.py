@@ -819,11 +819,15 @@ def _apply_scoring(
                     )
 
         registry = scoring.get("registry") or {}
+        prefer = [p.strip() for p in
+                  os.environ.get("SYSTEMONE_PREFER_MODELS", "").split(",")
+                  if p.strip()]
         try:
             route["ranked_models"] = rank_models(
                 registry, cal["calibrated_probabilities"],
                 topn=model_top_n(),
-                sort=scoring.get("sort") or "utility")
+                sort=scoring.get("sort") or "utility",
+                prefer=prefer or None)
         except Exception:
             route["ranked_models"] = []
 

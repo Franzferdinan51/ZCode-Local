@@ -559,6 +559,7 @@ def rank_models(
     lam: Optional[float] = None,
     topn: Optional[int] = None,
     sort: str = "utility",
+    prefer: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Expected-utility rank: U(m) = Σ_t P(t)·quality(m,t) − λ·cost(m).
 
@@ -572,6 +573,11 @@ def rank_models(
     "quality" (expected quality desc), "cost" (cost asc), "latency"
     (latency_ms_p50 asc; entries missing it sort last). Raises
     ValueError on an unknown sort.
+
+    prefer: explicit user override — listed model ids (in order) sort
+    first regardless of sort, e.g. from $SYSTEMONE_PREFER_MODELS.
+    Unknown ids are ignored; relative order is otherwise preserved.
+    None/empty disables the override (today's behavior).
     """
     if sort not in ("utility", "quality", "cost", "latency"):
         raise ValueError(
@@ -626,6 +632,10 @@ def rank_models(
                                    s["latency_ms_p50"] or 0.0))
     else:
         scored.sort(key=lambda s: s["utility"], reverse=True)
+    if prefer:
+        order = {mid: i for i, mid in enumerate(prefer)}
+        scored.sort(key=lambda s: (0 if s["model_id"] in order else 1,
+                                   order.get(s["model_id"], 0)))
     return scored[:topn] if topn is not None else scored
 
 

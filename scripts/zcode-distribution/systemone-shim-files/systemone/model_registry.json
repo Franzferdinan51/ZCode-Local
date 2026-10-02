@@ -38,6 +38,20 @@
             "heavy": 0.45
           },
           "vram_gb": 6
+        },
+        {
+          "available": false,
+          "cost": 1.0,
+          "latency_ms_p50": 900,
+          "model_id": "cloudflare_clef-flash",
+          "quality": {
+            "balanced": 0.75,
+            "economy": 0.8,
+            "heavy": 0.45
+          },
+          "vram_gb": 20,
+          "_estimated": true,
+          "_note": "9B class: quality/cost/latency estimated from ornith-1.5-9b pending battery measurement; availability flips live from LM Studio inventory (static false keeps old clients unchanged)."
         }
       ]
     },

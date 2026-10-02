@@ -1,8 +1,8 @@
 # ZCode-bundled SystemOne shim
 
 This directory is the `systemone` Python package bundled with the ZCode
-release so per-task model routing works with **zero manual setup**: on
-startup ZCode probes `$SYSTEMONE_SHIM_URL/healthz` (default
+release so per-task SystemOne decisions work with **zero manual setup**:
+on startup ZCode probes `$SYSTEMONE_SHIM_URL/healthz` (default
 `http://127.0.0.1:8765`) and, when nothing answers, starts this shim
 itself as a detached background process:
 
@@ -14,7 +14,7 @@ python3.11 -m systemone.shim --port 8765       # fallback; cwd: the ZCode releas
 `--engine` accepts `auto|local|sglang|jevk5|onnx|jev|kev|clef` (default:
 the `SYSTEMONE_ENGINE` env var, else `auto`). Served endpoints: `GET
 /,/healthz,/openapi.json,/metrics,/v1/decide/info` and `POST
-/v1/systemone,/v1/decisions,/v1/decide,/v1/systemone/route,/v1/systemone/rank-plans,/v1/systemone/decide,/v1/systemone/permute`.
+/v1/systemone,/v1/decisions,/v1/decide,/v1/systemone/route,/v1/systemone/rank-plans,/v1/systemone/decide,/v1/systemone/permute,/v1/systemone/batch`.
 
 A shim already listening on :8765 (for example a manually managed one)
 is used as-is and never duplicated. If the shim can't be started, ZCode
