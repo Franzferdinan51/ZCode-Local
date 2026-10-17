@@ -202,9 +202,9 @@ class SystemOneClient:
         noted-and-skipped: the endpoint is text-only upstream).
         Returns {"answers": {...}}.
         """
+        from .patterns import default_decision_model
         body: Dict[str, Any] = {"input": input, "questions": questions}
-        if model:
-            body["model"] = model
+        body["model"] = model or default_decision_model()
         return self._request("POST", "/v1/decisions", body)
 
     def systemone(
@@ -218,9 +218,9 @@ class SystemOneClient:
         questions: {id: {"type", "instructions", "criteria"}} (also accepts
         a list of question mappings carrying "id"). Returns {"answers": ...}.
         """
+        from .patterns import default_decision_model
         body: Dict[str, Any] = {"state": state, "questions": questions}
-        if model:
-            body["model"] = model
+        body["model"] = model or default_decision_model()
         return self._request("POST", "/v1/systemone", body)
 
     def status(self, probe: bool = True) -> Dict[str, Any]:

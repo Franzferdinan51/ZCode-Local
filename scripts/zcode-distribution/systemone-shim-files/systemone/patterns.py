@@ -80,6 +80,25 @@ def check_body_length(headers: Any) -> int:
 
 API_TOKEN_ENV = "SYSTEMONE_API_TOKEN"
 
+# D1 decision models (LM Studio library IDs). d1-3b is the primary decision
+# model; d1-omni-600m is the lightweight/fast fallback for latency-sensitive
+# calls. Env overrides: $SYSTEMONE_DECISION_MODEL, $SYSTEMONE_FAST_MODEL.
+DEFAULT_DECISION_MODEL = "d1-3b"
+DEFAULT_FAST_MODEL = "d1-omni-600m"
+DECISION_MODEL_ENV = "SYSTEMONE_DECISION_MODEL"
+FAST_MODEL_ENV = "SYSTEMONE_FAST_MODEL"
+
+
+def default_decision_model():
+    """Primary decision model: $SYSTEMONE_DECISION_MODEL, else d1-3b."""
+    return (os.environ.get(DECISION_MODEL_ENV) or "").strip() or DEFAULT_DECISION_MODEL
+
+
+def default_fast_model():
+    """Fast fallback decision model: $SYSTEMONE_FAST_MODEL, else d1-omni-600m."""
+    return (os.environ.get(FAST_MODEL_ENV) or "").strip() or DEFAULT_FAST_MODEL
+
+
 
 def api_token_required() -> str:
     """Shared-token gate for mutating routes ("" = open, the default).

@@ -107,6 +107,13 @@ from .rotation import (
 )
 from .loop import ActResult, DecisionLoop, LoopResult, Observation, Step, run_loop
 from .rerank_backend import OnnxCrossEncoder, RerankBackend
+from .model_lifecycle import (
+    track_model_use,
+    release_session_models,
+    reap_idle,
+    start_reaper,
+    unload_all,
+)
 from .sglang_backend import (
     CascadeBackend,
     HybridBackend,
@@ -133,6 +140,11 @@ __all__ = [
     "ConformalChoice",
     "SelfConsistent",
     "EnsembleBackend",
+    "track_model_use",
+    "release_session_models",
+    "reap_idle",
+    "start_reaper",
+    "unload_all",
     "JevDecideBackend",
     "JevError",
     "DecisionLoop",

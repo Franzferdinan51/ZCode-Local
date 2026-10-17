@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.28.0 (2026-10-16)
+
+### Features
+
+* Vendored SystemOne shim updated to SystemOne main (bb1580b): the D1
+  decision head (`systemone/d1.py`) now ships with the bundled shim, so
+  route tier reviews, `/v1/decisions`, rank-plans, permute and batch are
+  answered by the D1 decision models (d1-3b / d1-omni-600m, served by LM
+  Studio) instead of the GLiClass classifier alone (GLiClass remains the
+  fail-open fallback)
+* Route floor fix included from SystemOne: the deterministic floor now
+  gates on the analyzer's actual hard signals, so D1 tier picks apply
+  instead of being held on every request
+* Distribution closure: `d1.py` and `model_lifecycle.py` added to the
+  shim file list (`systemone-shim.mjs`)
+
 ## 3.27.1 (2026-09-26)
 
 ### Features

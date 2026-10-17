@@ -6,10 +6,13 @@ Shim-client commands (talk to the deployed shim over HTTP; they never load
 a model themselves — the shim URL comes from $SYSTEMONE_SHIM_URL or
 --shim-url, default http://127.0.0.1:8765):
 
-    systemone route "summarize this quarter's revenue" [--json]
     systemone decide --type choice --state "..." --instructions "..." \\
         --criteria a="first option" --criteria b="second option" [--json]
+    systemone decide --type score --state "..." --instructions "..." \\
+        --criteria low="..." --criteria high="..."
+    systemone decide --type noul --state "..." --instructions "..."
     systemone status [--json]            # shim + sidecar health
+    systemone route "summarize this quarter's revenue" [--json]
     systemone battery [--mode live]      # regression battery vs the shim
 
 Local commands (run against this machine's engine):
@@ -470,8 +473,18 @@ def cmd_serve(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="systemone",
-        description="SystemOne agent CLI — route tasks and make typed "
-                    "decisions via a live shim (or drive the local engine).",
+        usage=(
+            "%(prog)s decide --type {choice,score,noul} --state STATE "
+            "--instructions TEXT [--criteria LABEL=DESC ...]\n"
+            "       %(prog)s status\n"
+            "       %(prog)s route TASK [--json]"
+        ),
+        description=(
+            "Open typed-decision layer: choice, score, and noul with "
+            "calibrated probabilities, honest uncertainty, one batched call. "
+            "Talks to a live shim, or drives the local engine. "
+            "Model and effort routing is the optional route command."
+        ),
     )
     parser.add_argument(
         "--shim-url", default=None,
@@ -483,21 +496,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="cmd", required=True, metavar="command")
 
-    # -- shim-client commands --
-    p_route = sub.add_parser(
-        "route", help="route a task to the cheapest sufficient tier (via shim)")
-    p_route.add_argument("task", help="task description to route")
-    p_route.add_argument(
-        "--cost-bias", default="balanced",
-        choices=("economy", "balanced", "quality"),
-        help="cost/capability bias (default balanced)")
-    p_route.add_argument(
-        "--tiers", default=None,
-        help="comma-separated tier subset to route over, e.g. economy,balanced")
-    p_route.add_argument("--json", action="store_true",
-                         help="emit the raw route dict as JSON")
-    p_route.set_defaults(func=cmd_route)
-
+    # -- shim-client commands (typed decisions first; route is one later facet) --
     p_decide = sub.add_parser(
         "decide", help="one typed decision: choice | noul | score (via shim)")
     p_decide.add_argument("--type", required=True,
@@ -523,6 +522,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--direct-sglang", action="store_true",
         help="judge with SGLang directly (SGLANG_BASE_URL), no shim involved")
     p_decide.set_defaults(func=cmd_decide)
+
+    p_route = sub.add_parser(
+        "route", help="route a task to the cheapest sufficient tier (via shim)")
+    p_route.add_argument("task", help="task description to route")
+    p_route.add_argument(
+        "--cost-bias", default="balanced",
+        choices=("economy", "balanced", "quality"),
+        help="cost/capability bias (default balanced)")
+    p_route.add_argument(
+        "--tiers", default=None,
+        help="comma-separated tier subset to route over, e.g. economy,balanced")
+    p_route.add_argument("--json", action="store_true",
+                         help="emit the raw route dict as JSON")
+    p_route.set_defaults(func=cmd_route)
 
     p_status = sub.add_parser(
         "status", help="shim + sidecar health, decision backend in use")

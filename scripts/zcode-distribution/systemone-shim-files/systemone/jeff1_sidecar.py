@@ -20,8 +20,9 @@ once — lazily, on the first POST — then serves:
          "candidates": [{"tier": "economy", "description": "..."}, ...]}
         -> {"tier": "balanced", "confidence": 0.72, "agree": true,
             "rationale": "..."}
-        Choice head over the candidate tiers. ADVISORY ONLY — the shim
-        never changes the routed tier based on this reply.
+        Choice head over the candidate tiers. The shim treats this
+        as the route decision when it answers (see shim.py): its tier
+        replaces the hybrid tier, subject to the deterministic floor.
 
     POST /v1/jeff1/decide
         {"state": <any>, "instructions": "...",

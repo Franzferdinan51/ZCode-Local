@@ -200,6 +200,12 @@ from .jeff1 import (
     rank_plans_via_jeff1,
     second_opinion as jeff1_second_opinion,
 )
+from .d1 import (
+    d1_blend_weight,
+    decide_via_d1,
+    rank_plans_via_d1,
+    route_tier_via_d1,
+)
 from .calibration import load_type_calibration
 from .metrics import summarize as summarize_metrics
 
@@ -719,6 +725,7 @@ def route_decision(
         "probabilities": blended,
         "cost_bias": cost_bias,
         "deterministic_tier": det["tier"],
+        "deterministic_has_signal": bool(det["has_signal"]),
         "signals": det["reasons"],
         # Effort hint for agent loops: coarse reasoning budget for this task.
         "effort": effort,
@@ -759,6 +766,13 @@ def route_decision(
                             f" Exploration roll (p={explore:.2f}) kept "
                             f"'{route['model_id']}'."
                         )
+    # Track model usage for lifecycle management (idle reaping via `lms unload`).
+    # Never raises — lifecycle is best-effort.
+    try:
+        from .model_lifecycle import track_model_use
+        track_model_use(route["model_id"])
+    except Exception:
+        pass
     return route
 
 
@@ -806,17 +820,83 @@ def _apply_scoring(
                     f"effort bumped to {bumped}, no tool pruning."
                 )
 
-        # Jeff-1 second head (uncertain routes only): record an advisory
-        # tier second opinion on the route. Never changes the routed tier.
-        if cal["uncertain"] and jeff1_enabled():
-            opinion = _jeff1_second_opinion(task, route, cal, scoring)
-            if opinion is not None:
-                route["jeff1_second_opinion"] = opinion
-                if not opinion.get("agree", True):
+        # D1 decision head: the decision model named by the request
+        # (default d1-3b, served by LM Studio) reviews EVERY scored
+        # route, and when it answers, its tier IS the decision -- the
+        # hybrid (rules + GLiClass) only proposes. One floor survives:
+        # when the deterministic analyzer's hard signals actually
+        # fired (det["has_signal"] — NOT the reasons list, which is
+        # non-empty even for "no strong signals"), its tier is a floor
+        # D1 cannot go below. Otherwise D1's tier IS the decision.
+        # LM Studio unreachable -> the hybrid route stands (fail-open).
+        reg = scoring.get("registry") or {}
+        tiers_map = reg.get("tiers", reg) if isinstance(reg, dict) else {}
+        d1_candidates: List[Dict[str, str]] = []
+        if isinstance(tiers_map, dict):
+            for tname in _TIER_ORDER:
+                entry = tiers_map.get(tname)
+                if isinstance(entry, dict):
+                    desc = str(entry.get("description") or "")
+                    if not desc:
+                        models = entry.get("models") or []
+                        if models and isinstance(models[0], dict):
+                            desc = str(models[0].get("model_id") or tname)
+                    d1_candidates.append(
+                        {"tier": tname, "description": desc or tname})
+        d1 = route_tier_via_d1(
+            task, d1_candidates, scoring.get("decision_model"))
+        if d1 is not None:
+            route["d1_decision"] = d1
+            new_tier = d1.get("tier")
+            if new_tier in _TIER_ORDER and new_tier != route.get("tier"):
+                floor_tier = route.get("deterministic_tier")
+                if (
+                    route.get("deterministic_has_signal")
+                    and floor_tier in _TIER_ORDER
+                    and _TIER_ORDER.index(new_tier)
+                    < _TIER_ORDER.index(floor_tier)
+                ):
+                    new_tier = floor_tier
+                if new_tier != route.get("tier"):
+                    old_tier = route.get("tier")
+                    route["tier"] = new_tier
+                    tier_effort = _TIER_EFFORT.get(
+                        new_tier, route.get("effort", "medium"))
+                    # Keep any uncertainty effort bump already applied
+                    # above: the override never lowers it.
+                    cur_effort = route.get("effort", "medium")
+                    if (
+                        tier_effort in _EFFORT_LEVELS
+                        and cur_effort in _EFFORT_LEVELS
+                        and _EFFORT_LEVELS.index(tier_effort)
+                        < _EFFORT_LEVELS.index(cur_effort)
+                    ):
+                        tier_effort = cur_effort
+                    route["effort"] = tier_effort
+                    # Keep model_id consistent with the new tier when
+                    # the registry names a first model for it.
+                    entry = tiers_map.get(new_tier) \
+                        if isinstance(tiers_map, dict) else None
+                    if isinstance(entry, dict):
+                        models = entry.get("models") or []
+                        if models and isinstance(models[0], dict) \
+                                and models[0].get("model_id"):
+                            route["model_id"] = models[0]["model_id"]
+                    d1["applied"] = True
                     route["rationale"] += (
-                        " Jeff-1 second opinion disagrees (advisory; tier "
-                        f"unchanged): {opinion.get('rationale', '')}"
+                        f" D1 ({d1.get('model')}) decision applied: tier "
+                        f"{old_tier} -> {new_tier} "
+                        f"(p={d1.get('probabilities', {}).get(new_tier, 0.0):.2f})."
                     )
+                else:
+                    route["rationale"] += (
+                        f" D1 ({d1.get('model')}) pick held at the "
+                        "deterministic floor."
+                    )
+            elif new_tier == route.get("tier"):
+                route["rationale"] += (
+                    f" D1 ({d1.get('model')}) concurs with the hybrid tier."
+                )
 
         registry = scoring.get("registry") or {}
         prefer = [p.strip() for p in
@@ -862,7 +942,7 @@ def _jeff1_second_opinion(
     cal: Dict[str, Any],
     scoring: Dict[str, Any],
 ) -> Optional[Dict[str, Any]]:
-    """Fetch Jeff-1's advisory tier second opinion; None on any failure.
+    """Fetch Jeff-1's tier second opinion; None on any failure.
 
     Builds the candidate list from the scoring registry and hands the
     uncertain route summary to the sidecar. Pure fail-open: every error
@@ -2296,12 +2376,19 @@ class ShimHandler(BaseHTTPRequestHandler):
             ]
         return 200, payload
 
-    def _scoring_ctx(self) -> Dict[str, Any]:
-        return {
+    def _scoring_ctx(self, body: Any = None) -> Dict[str, Any]:
+        ctx: Dict[str, Any] = {
             "calibration": getattr(self.server, "calibration", None),
             "tools": getattr(self.server, "tools", []),
             "registry": getattr(self.server, "registry", {}),
         }
+        # The decision model the client named for this request (e.g.
+        # "d1-3b"); d1.resolve_model validates it before any call.
+        if isinstance(body, dict):
+            named = body.get("model")
+            if isinstance(named, str) and named.strip():
+                ctx["decision_model"] = named
+        return ctx
 
     def _handle_route(self) -> tuple[int, Dict[str, Any]]:
         """POST /v1/systemone/route -> (status, payload)."""
@@ -2321,7 +2408,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             raise ValueError(f"'explore' must be in [0, 1], got {explore!r}")
         route = route_decision(
             self.server.engine, task, candidates, cost_bias,
-            scoring=self._scoring_ctx(),
+            scoring=self._scoring_ctx(body),
             sort=sort, fallbacks=fallbacks, explore=float(explore),
         )
         return 200, {
@@ -2355,7 +2442,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             {"task": task.strip()}, self.server.registry)
         route = route_decision(
             self.server.engine, task.strip(), candidates, "balanced",
-            scoring=self._scoring_ctx(),
+            scoring=self._scoring_ctx(body),
         )
         tier_cost = None
         reg = self.server.registry or {}
@@ -2370,14 +2457,28 @@ class ShimHandler(BaseHTTPRequestHandler):
                         pass
                     break
         ranking = rank_plans(self.server.engine, task.strip(), plans, tier_cost)
+        stub_plans = [
+            {"id": p.get("id", f"plan_{i}"), "text": p.get("text") or ""}
+            for i, p in enumerate(plans)
+        ]
+        # D1 decision head: P(plan succeeds | task) from the decision
+        # model, blended over the local ranking at SYSTEMONE_D1_BLEND.
+        d1_info: Dict[str, Any] = {"consulted": False, "latency_ms": None,
+                                   "blended": False}
+        t0 = time.perf_counter()
+        d1_ranking = rank_plans_via_d1(
+            task.strip(), stub_plans, body.get("model"))
+        d1_info["latency_ms"] = round((time.perf_counter() - t0) * 1000.0, 1)
+        if d1_ranking is not None:
+            ranking = blend_rankings(
+                ranking, d1_ranking, tier_cost, weight=d1_blend_weight())
+            d1_info["consulted"] = True
+            d1_info["blended"] = True
+            d1_info["model"] = body.get("model") or "d1-3b"
         jeff1: Dict[str, Any] = {"consulted": False, "latency_ms": None,
                                  "blended": False}
         if jeff1_enabled():
             t0 = time.perf_counter()
-            stub_plans = [
-                {"id": p.get("id", f"plan_{i}"), "text": p.get("text") or ""}
-                for i, p in enumerate(plans)
-            ]
             jeff_ranking = rank_plans_via_jeff1(task.strip(), stub_plans)
             jeff1["latency_ms"] = round((time.perf_counter() - t0) * 1000.0, 1)
             if jeff_ranking is not None:
@@ -2388,6 +2489,7 @@ class ShimHandler(BaseHTTPRequestHandler):
             "task": task.strip(),
             "tier": route["tier"],
             "ranking": ranking,
+            "d1": d1_info,
             "jeff1": jeff1,
             "model": self.server.engine.model_name,
             "usage": {},
@@ -2397,13 +2499,11 @@ class ShimHandler(BaseHTTPRequestHandler):
     def _handle_decide(self) -> tuple[int, Dict[str, Any]]:
         """POST /v1/systemone/decide -> (status, payload).
 
-        Body: {"state", "instructions", "criteria", "type"} — the decision
-        sidecar's decide schema. The primary path proxies the request to
-        the sidecar (backend "decider", the sole backend). When the sidecar
-        is unreachable, 404s
-        (endpoint not deployed yet), or returns a malformed reply, the
-        request fails open to the local GLiClass engine
-        (backend "fallback") via the same machinery as /v1/systemone.
+        Body: {"state", "instructions", "criteria", "type"} — the decide
+        schema. The primary path asks the D1 decision model (LM Studio
+        /v1/systemone; backend "d1"). Behind it, the Jeff-1 sidecar
+        (backend "decider", only when enabled) and then the local
+        GLiClass engine (backend "fallback") fail open in that order.
         """
         body = self._read_body()
         if not isinstance(body, dict):
@@ -2422,6 +2522,31 @@ class ShimHandler(BaseHTTPRequestHandler):
         state_text = maybe_date_facts(state_text)
 
         t0 = time.perf_counter()
+        # Primary path: the D1 decision model (LM Studio /v1/systemone),
+        # named by the request's "model" (default d1-3b). Duckets'
+        # decision layer: d1-3b / d1-omni-600m make the calls; every
+        # other path below is fail-open behind it.
+        d1 = decide_via_d1(
+            state_text, qtype, instructions, body.get("criteria"),
+            body.get("model"))
+        if d1 is not None:
+            latency_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+            payload = dict(d1)
+            payload["backend"] = "d1"
+            payload["latency_ms"] = latency_ms
+            dist = payload.get("probabilities") or payload.get("distribution") or {}
+            ordered_probs = [float(dist.get(lab, 0.0)) for lab in labels]
+            record_decide_metric(self.server, {
+                "type": qtype,
+                "labels": labels,
+                "probs": ordered_probs,
+                "confidence": payload.get("confidence"),
+                "latency_ms": latency_ms,
+                "backend": "d1",
+                "model": payload.get("model") or "d1-3b",
+            })
+            return 200, payload
+
         jeff1 = decide_via_jeff1({
             "state": body["state"],
             "instructions": instructions,
@@ -2888,6 +3013,7 @@ def serve(
     engine: Any = None,
     registry: Dict[str, Dict[str, Any]] | None = None,
     engine_name: str | None = None,
+    host: str = "127.0.0.1",
 ) -> ThreadingHTTPServer:
     """Build (but do not block on) the shim server.
 
@@ -2908,7 +3034,7 @@ def serve(
             $SYSTEMONE_ENGINE, default "auto".
     """
     engine = engine or create_engine(engine_name)
-    server = ThreadingHTTPServer(("127.0.0.1", port), ShimHandler)
+    server = ThreadingHTTPServer((host, port), ShimHandler)
     server.engine = engine  # type: ignore[attr-defined]
     server.engine_backend = engine_backend_name(engine)  # type: ignore[attr-defined]
     server.metrics = Metrics()  # type: ignore[attr-defined]
@@ -2959,6 +3085,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Local /v1/systemone shim server")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help=(
+            "interface to bind (default 127.0.0.1; use 0.0.0.0 to allow "
+            "other devices on the network, e.g. a phone over Tailscale, "
+            "to reach the shim)."
+        ),
+    )
+    parser.add_argument(
         "--engine",
         choices=list(ENGINE_CHOICES),
         default=None,
@@ -2990,9 +3125,9 @@ def main() -> None:
     if args.daemonize and _win32_detach(sys.argv[1:]):
         print("systemone shim detached; parent exiting")
         return
-    server = serve(args.port, engine_name=args.engine)
+    server = serve(args.port, engine_name=args.engine, host=args.host)
     print(
-        f"systemone shim on http://127.0.0.1:{args.port}/v1/systemone "
+        f"systemone shim on http://{args.host}:{args.port}/v1/systemone "
         f"and /v1/systemone/route (model {server.engine.model_name}, "
         f"backend {server.engine_backend})"
     )
