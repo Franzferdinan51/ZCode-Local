@@ -152,7 +152,14 @@ export function validateDecideAnswer(
     if (responseType !== type) return null;
     // choice: `label`; noul: `label` ("yes"/"no"); score: `level`.
     const labelField = type === "score" ? "level" : "label";
-    const label = raw[labelField];
+    const rawLabel = raw[labelField];
+    // The shim's D1-era answers carry a score `level` as a JSON number
+    // (the GLiClass-era payload used a string). Accept both: coerce a
+    // finite number to its string form before the offered-set check.
+    const label =
+      typeof rawLabel === "number" && Number.isFinite(rawLabel)
+        ? String(rawLabel)
+        : rawLabel;
     if (typeof label !== "string" || !offered.has(label)) return null;
     // choice/noul: `probabilities`; score: `distribution`.
     const distribution = raw[type === "score" ? "distribution" : "probabilities"];
