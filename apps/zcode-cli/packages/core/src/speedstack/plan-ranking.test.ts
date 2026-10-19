@@ -414,11 +414,11 @@ test("selectRankedPlan reports decided-winner for decider rankings", () => {
 test("resolveSystemOneRankPlansEndpoint honors $SYSTEMONE_SHIM_URL", () => {
   assert.equal(
     resolveSystemOneRankPlansEndpoint({}),
-    "http://127.0.0.1:8765/v1/systemone/rank-plans",
+    "http://127.0.0.1:8766/v1/systemone/rank-plans",
   );
   assert.equal(
     SYSTEMONE_RANK_PLANS_ENDPOINT,
-    "http://127.0.0.1:8765/v1/systemone/rank-plans",
+    "http://127.0.0.1:8766/v1/systemone/rank-plans",
   );
   assert.equal(
     resolveSystemOneRankPlansEndpoint({

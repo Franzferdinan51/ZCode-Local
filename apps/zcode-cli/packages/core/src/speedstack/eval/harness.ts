@@ -219,7 +219,6 @@ function toRouteRecord(
   const margin = routeTierMargin(decision);
   if (margin !== undefined) record.margin = margin;
   if (decision.effort !== undefined) record.effort = decision.effort;
-  if (decision.modelId !== undefined) record.modelId = decision.modelId;
   if (latencyMs !== undefined) record.latencyMs = latencyMs;
   return record;
 }

@@ -31,15 +31,6 @@ const AVAILABLE = [
   "text-embedding-nomic-embed-text-v1.5",
 ];
 
-test("planner takes the router advisory when it is locally available", () => {
-  const roles = resolvePlanExecuteModels(
-    AVAILABLE,
-    { routeModelId: "google/gemma-4-12b-qat", routeTier: "balanced" },
-    {},
-  );
-  assert.equal(roles.plannerModelId, "google/gemma-4-12b-qat");
-});
-
 test("executor falls back to the smallest usable local model", () => {
   const roles = resolvePlanExecuteModels(AVAILABLE);
   // No router advisory, no prefs: planner = first usable, executor =
@@ -50,10 +41,10 @@ test("executor falls back to the smallest usable local model", () => {
   assert.ok(!/embed/i.test(roles.executorModelId));
 });
 
-test("explicit preferences win over the router advisory when available", () => {
+test("explicit preferences win when available", () => {
   const roles = resolvePlanExecuteModels(
     AVAILABLE,
-    { routeModelId: "ornith-1.5-9b", routeTier: "balanced" },
+    { routeTier: "balanced" },
     {
       plannerModelId: "google/gemma-4-12b-qat",
       executorModelPreferences: ["ornith-1.5-9b", "google/gemma-4-12b-qat"],
@@ -63,13 +54,13 @@ test("explicit preferences win over the router advisory when available", () => {
   assert.equal(roles.executorModelId, "ornith-1.5-9b");
 });
 
-test("unavailable preferences fall through to router/local fallbacks", () => {
+test("unavailable preferences fall through to local fallbacks", () => {
   const roles = resolvePlanExecuteModels(
     AVAILABLE,
-    { routeModelId: "ornith-1.5-9b", routeTier: "balanced" },
+    { routeTier: "balanced" },
     { plannerModelId: "not-loaded-model", executorModelId: "also-missing" },
   );
-  assert.equal(roles.plannerModelId, "ornith-1.5-9b");
+  assert.equal(roles.plannerModelId, "ornith-1.5-35b-a3b");
   assert.equal(roles.executorModelId, "ornith-1.5-9b");
 });
 

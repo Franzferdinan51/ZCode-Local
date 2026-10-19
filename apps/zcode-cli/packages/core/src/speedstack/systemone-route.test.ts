@@ -32,7 +32,6 @@ import {
   resolveEffortTierAndOptions,
   resolveMcpAttachPolicy,
   resolveSystemOneBehaviorPolicy,
-  resolveSystemOneModelTarget,
   routeTierMargin,
   SYSTEMONE_PRUNE_CONFIDENCE_THRESHOLD,
   type EffortResolution,
@@ -169,24 +168,6 @@ test("thinkingMode auto follows the route hint", () => {
   assert.equal(resolved.tier, "medium");
 });
 
-test("modelRouting does not gate thinking resolution (independence)", () => {
-  // Route moves the model AND thinking is pinned: both apply.
-  const resolved = expectTier(
-    resolveEffortTierAndOptions({
-      config: { thinkingMode: "low", modelRouting: true },
-      route: route({ tier: "heavy", effort: "ultra", confidence: 0.99 }),
-      model: TIER_MODEL,
-    }),
-  );
-  assert.equal(resolved.tier, "low");
-  const target = resolveSystemOneModelTarget({
-    route: route({ modelId: "other-model" }),
-    modelRouting: true,
-    currentModelId: "test-model",
-  });
-  assert.equal(target, "other-model");
-});
-
 test("missing route decision resolves nothing (fail-open)", () => {
   assert.equal(resolveEffortTierAndOptions({ route: undefined, model: TIER_MODEL }), undefined);
 });
@@ -194,64 +175,6 @@ test("missing route decision resolves nothing (fail-open)", () => {
 test("route without a usable effort resolves nothing (fail-open)", () => {
   const bad = route({ effort: "bogus" as unknown as "low" });
   assert.equal(resolveEffortTierAndOptions({ route: bad, model: TIER_MODEL }), undefined);
-});
-
-test("model target: routing off keeps the pinned model", () => {
-  assert.equal(
-    resolveSystemOneModelTarget({
-      route: route({ modelId: "other-model" }),
-      modelRouting: false,
-      currentModelId: "test-model",
-    }),
-    undefined,
-  );
-  assert.equal(
-    resolveSystemOneModelTarget({
-      route: route({ modelId: "other-model" }),
-      modelRouting: undefined,
-      currentModelId: "test-model",
-    }),
-    undefined,
-  );
-});
-
-test("model target: same model or missing model id resolves nothing", () => {
-  assert.equal(
-    resolveSystemOneModelTarget({
-      route: route({ modelId: "test-model" }),
-      modelRouting: true,
-      currentModelId: "test-model",
-    }),
-    undefined,
-  );
-  assert.equal(
-    resolveSystemOneModelTarget({
-      route: route({ modelId: undefined }),
-      modelRouting: true,
-      currentModelId: "test-model",
-    }),
-    undefined,
-  );
-  assert.equal(
-    resolveSystemOneModelTarget({
-      route: undefined,
-      modelRouting: true,
-      currentModelId: "test-model",
-    }),
-    undefined,
-  );
-});
-
-test("model target: thinkingMode never gates model routing", () => {
-  // Thinking off + model routing on: the model still moves.
-  assert.equal(
-    resolveSystemOneModelTarget({
-      route: route({ modelId: "other-model" }),
-      modelRouting: true,
-      currentModelId: "test-model",
-    }),
-    "other-model",
-  );
 });
 
 test("applySystemOneEffortOverride binds the model with route options", () => {
@@ -410,7 +333,7 @@ test("ZCODE_SYSTEMONE=0 disables route lookups (master kill-switch)", async () =
     assert.equal(isSystemOneDisabled(), true);
     // Even a live endpoint is never contacted when the kill-switch is set.
     const decision = await fetchSystemOneRouteDecision("summarize this", {
-      endpoint: "http://127.0.0.1:8765/v1/systemone/route",
+      endpoint: "http://127.0.0.1:8766/v1/systemone/route",
       timeoutMs: 100,
     });
     assert.equal(decision, undefined);
@@ -685,42 +608,6 @@ test("resolveSystemOneBehaviorPolicy without uncertainty is unchanged", () => {
   assert.equal(resolution.uncertainBump, undefined);
 });
 
-test("fetch parses ranked_models in best-value order", async () => {
-  const payload = {
-    route: {
-      tier: "balanced",
-      confidence: 0.68,
-      ranked_models: [
-        { model_id: "model-a", tier: "balanced", utility: 0.91, quality: 0.8, cost: 0.2 },
-        { model_id: "model-b", tier: "economy", utility: 0.42 },
-        { not_a_model: true },
-        { model_id: "  ", tier: "heavy", utility: 0.5 },
-        { model_id: "model-c", tier: "heavy", utility: "high" },
-      ],
-    },
-  };
-  const server = createServer((_req, res) => {
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify(payload));
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  try {
-    const address = server.address();
-    assert.ok(address && typeof address === "object");
-    const decision = await fetchSystemOneRouteDecision("pick a model", {
-      endpoint: `http://127.0.0.1:${address.port}/v1/systemone/route`,
-      timeoutMs: 2000,
-    });
-    assert.ok(decision);
-    assert.equal(decision.rankedModels?.length, 2);
-    assert.equal(decision.rankedModels?.[0]?.modelId, "model-a");
-    assert.equal(decision.rankedModels?.[0]?.utility, 0.91);
-    assert.equal(decision.rankedModels?.[1]?.modelId, "model-b");
-  } finally {
-    server.close();
-  }
-});
-
 test("fetch parses jeff1_second_opinion (decider-backed advisory)", async () => {
   const payload = {
     route: {
@@ -780,54 +667,6 @@ test("fetch ignores a malformed jeff1_second_opinion", async () => {
   }
 });
 
-test("model target prefers the ranked best-value model over route.model_id", () => {
-  const target = resolveSystemOneModelTarget({
-    route: route({
-      modelId: "routed-model",
-      rankedModels: [
-        { modelId: "best-value-model", tier: "balanced", utility: 0.95 },
-        { modelId: "second", tier: "economy", utility: 0.5 },
-      ],
-    }),
-    modelRouting: true,
-    currentModelId: "test-model",
-  });
-  assert.equal(target, "best-value-model");
-});
-
-test("model target falls back to route.model_id when the ranking is absent", () => {
-  assert.equal(
-    resolveSystemOneModelTarget({
-      route: route({ modelId: "routed-model", rankedModels: undefined }),
-      modelRouting: true,
-      currentModelId: "test-model",
-    }),
-    "routed-model",
-  );
-  assert.equal(
-    resolveSystemOneModelTarget({
-      route: route({ modelId: "routed-model", rankedModels: [] }),
-      modelRouting: true,
-      currentModelId: "test-model",
-    }),
-    "routed-model",
-  );
-});
-
-test("model target skips the retarget when the ranked pick is already loaded", () => {
-  assert.equal(
-    resolveSystemOneModelTarget({
-      route: route({
-        modelId: "routed-model",
-        rankedModels: [{ modelId: "test-model", tier: "economy", utility: 0.9 }],
-      }),
-      modelRouting: true,
-      currentModelId: "test-model",
-    }),
-    undefined,
-  );
-});
-
 test("fetch appends a route decision record to the log path", async () => {
   const dir = mkdtempSync(join(tmpdir(), "zcode-decision-log-"));
   const logPath = join(dir, "records.jsonl");
@@ -865,9 +704,6 @@ test("fetch appends a route decision record to the log path", async () => {
     assert.equal(record.confidence, 0.68);
     assert.equal(record.taskChars, "summarize this doc".length);
     assert.ok(Math.abs(record.margin - (0.54 - 0.28)) < 1e-9);
-    assert.deepEqual(record.rankedModels, [
-      { modelId: "model-a", tier: "balanced", utility: 0.91 },
-    ]);
     assert.ok(typeof record.ts === "string");
   } finally {
     process.env.ZCODE_SYSTEMONE_DECISION_LOG = "0";
@@ -948,7 +784,7 @@ test("fetch drops unknown cost_bias and empty tiers (shim would 400)", async () 
   }
 });
 
-test("fetch sends sort/fallbacks/explore and parses fallbacks/explored", async () => {
+test("fetch sends sort/fallbacks/explore and parses explored", async () => {
   const payload = {
     route: {
       tier: "balanced",
@@ -983,7 +819,6 @@ test("fetch sends sort/fallbacks/explore and parses fallbacks/explored", async (
     assert.equal(seenBody["sort"], "latency");
     assert.equal(seenBody["fallbacks"], 2);
     assert.equal(seenBody["explore"], 0.1);
-    assert.deepEqual(decision.fallbacks, ["m-second", "m-third"]);
     assert.equal(decision.explored, true);
   } finally {
     server.close();
@@ -1014,14 +849,13 @@ test("fetch drops unknown sort and out-of-range fallbacks/explore", async () => 
     });
     assert.ok(decision);
     assert.deepEqual(Object.keys(seenBody), ["task"]);
-    assert.equal(decision.fallbacks, undefined);
     assert.equal(decision.explored, undefined);
   } finally {
     server.close();
   }
 });
 
-test("fetch drops malformed fallbacks but keeps the decision", async () => {
+test("fetch keeps the decision when the payload carries junk model fields", async () => {
   const payload = {
     route: {
       tier: "heavy",
@@ -1043,7 +877,7 @@ test("fetch drops malformed fallbacks but keeps the decision", async () => {
       timeoutMs: 2000,
     });
     assert.ok(decision);
-    assert.deepEqual(decision.fallbacks, ["m-ok"]);
+    assert.equal(decision.tier, "heavy");
     assert.equal(decision.explored, undefined);
   } finally {
     server.close();

@@ -13,8 +13,9 @@
 /** Env var overriding the SystemOne shim base URL. */
 export const SYSTEMONE_SHIM_URL_ENV = "SYSTEMONE_SHIM_URL";
 
-/** Default shim address when $SYSTEMONE_SHIM_URL is unset. */
-export const DEFAULT_SYSTEMONE_SHIM_URL = "http://127.0.0.1:8765";
+/** Default shim address when $SYSTEMONE_SHIM_URL is unset: the managed
+ * SystemOne shim (LaunchAgent-supervised from ~/systemone) on :8766. */
+export const DEFAULT_SYSTEMONE_SHIM_URL = "http://127.0.0.1:8766";
 
 /**
  * Resolve the shim base URL: $SYSTEMONE_SHIM_URL (trimmed, trailing

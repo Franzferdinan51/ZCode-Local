@@ -29,7 +29,7 @@ export interface V4ComposerDraft {
   lastPermissionGrantId?: string;
   modelSelection?: ModelSelection;
   /**
-   * SystemOne speed-stack knobs (modelRouting toggle + thinkingMode).
+   * SystemOne speed-stack knobs (thinkingMode).
    * Optional: old drafts without it keep today's defaults (no silent flips).
    */
   speedStack?: SpeedStackWireConfig;

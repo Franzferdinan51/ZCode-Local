@@ -233,15 +233,13 @@ export const runPrompt = async (
         modelStreaming: "on",
         presentationSurface,
         workingDirectory,
-        // 3.24.0: --model auto / --thinking <mode> → per-run speed-stack knobs.
-        // modelRouting and thinkingMode are independent; either may be set alone.
-        ...(options.model === "auto" || options.thinking
+        // 3.24.0: --thinking <mode> → per-run speed-stack knob.
+        // (--model auto no longer routes: the selected/configured model
+        // always runs; SystemOne informs effort only.)
+        ...(options.thinking
           ? {
               speedStack: {
-                ...(options.model === "auto" ? { modelRouting: true } : {}),
-                ...(options.thinking
-                  ? { thinkingMode: options.thinking as ThinkingMode }
-                  : {}),
+                thinkingMode: options.thinking as ThinkingMode,
               },
             }
           : {}),

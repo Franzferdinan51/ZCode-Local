@@ -3,27 +3,26 @@
 // ============================================================
 //
 // One lightweight client for the local SystemOne shim
-// (POST http://127.0.0.1:8765/v1/systemone/route), plus the two per-task
+// (POST http://127.0.0.1:8766/v1/systemone/route), plus the two per-task
 // policies driven by its route decision:
 //
-//   Z0 model routing  - route.model_id -> retarget the session model for
-//                     this task, ONLY when SpeedStackSessionConfig.modelRouting
-//                     is on ("Auto (SystemOne)"). Fully independent of Z1.
 //   Z1 effort wiring  - route.effort -> EffortTier -> ModelOptions
 //                     (reasoningLevel + maxOutputTokens) via
 //                     resolveEffortTierAndOptions / applySystemOneEffortOverride.
-//                     Honors thinkingMode (off/pinned/auto). Fully independent
-//                     of Z0.
+//                     Honors thinkingMode (off/pinned/auto).
 //   Z2 MCP pruning    - resolveMcpAttachPolicy decides whether MCP servers
 //                     attach at all; pruneMcpServerMap / pruneMcpTools apply
 //                     explicit allowlists from SpeedStackSessionConfig.
-//                     Independent of Z0/Z1; kill-switches documented below.
+//                     Kill-switches documented below.
+//
+// There is NO model routing: the session model is always the one the user
+// selected. The route decision informs effort and MCP attach only — it
+// never names or swaps the model.
 //
 // Everything here is fail-open: the shim being down, slow, or returning
 // garbage yields `undefined` / "attach everything", i.e. today's behavior.
 
 import type { Logger, ModelOptions } from "@zcode/contracts";
-import { extractRouteEffortHint } from "@zcode/shared/systemone-scorer";
 import {
   bumpEffortTier,
   effortTierToModelOptions,
@@ -104,7 +103,6 @@ export interface SystemOneRouteDecision {
   readonly confidence: number;
   readonly effort?: string;
   readonly taskLabels?: readonly string[];
-  readonly modelId?: string;
   /**
    * True when the shim's calibration flagged the route as uncertain
    * (narrow top-1/top-2 margin). Phase 3 rule: an uncertain route NEVER
@@ -117,12 +115,6 @@ export interface SystemOneRouteDecision {
    * keep-signals only, never prune-signals. Absent/empty on older shims.
    */
   readonly rankedTools?: readonly RankedTool[] | undefined;
-  /**
-   * Shim's expected-utility model ranking (advisory, best-value first).
-   * Z0 model routing consumes the top entry; absent/empty on older shims
-   * or when the registry can't rank — never an error.
-   */
-  readonly rankedModels?: readonly RankedModel[] | undefined;
   /**
    * Advisory tier second opinion the shim computed for uncertain routes
    * (wire name `jeff1_second_opinion`; decider-backed now, the name is
@@ -149,16 +141,9 @@ export interface SystemOneRouteDecision {
    */
   readonly costBias?: string | undefined;
   /**
-   * Ordered failover model ids (shim 0.2.0+, wire name `fallbacks`):
-   * ranked-model ids after the winner, best first. Consume in order
-   * when the routed model is unavailable. Absent/empty on older shims
-   * or when the shim served without a scoring context.
-   */
-  readonly fallbacks?: readonly string[] | undefined;
-  /**
    * True when the shim's epsilon-greedy exploration roll overrode the
-   * winner (shim 0.2.0+, wire name `explored`). Only possible when the
-   * request set explore > 0. Absent on older shims — "not present",
+   * tier winner (shim 0.2.0+, wire name `explored`). Only possible when
+   * the request set explore > 0. Absent on older shims — "not present",
    * never an error.
    */
   readonly explored?: boolean | undefined;
@@ -169,18 +154,6 @@ export interface RankedTool {
   readonly id: string;
   readonly relevance: number;
   readonly kind?: string | undefined;
-}
-
-/**
- * One entry of the shim's ranked_models surface (best-value first).
- * Model ids come from the shim's registry — never hard-coded here.
- */
-export interface RankedModel {
-  readonly modelId: string;
-  readonly tier: string;
-  readonly utility: number;
-  readonly quality?: number | undefined;
-  readonly cost?: number | undefined;
 }
 
 /**
@@ -335,16 +308,6 @@ function logRouteDecision(
         ? { uncertain: decision.uncertain }
         : {}),
       ...(margin !== undefined ? { margin } : {}),
-      ...(decision.modelId ? { modelId: decision.modelId } : {}),
-      ...(decision.rankedModels
-        ? {
-            rankedModels: decision.rankedModels.map((m) => ({
-              modelId: m.modelId,
-              tier: m.tier,
-              utility: m.utility,
-            })),
-          }
-        : {}),
       taskChars: task.length,
     });
   } catch {
@@ -365,15 +328,12 @@ function parseRouteDecision(payload: unknown): SystemOneRouteDecision | undefine
     confidence: number;
     effort?: string;
     taskLabels?: readonly string[];
-    modelId?: string;
     uncertain?: boolean;
     rankedTools?: RankedTool[];
-    rankedModels?: RankedModel[];
     secondOpinion?: SecondOpinion;
     tierScores?: Readonly<Record<string, number>>;
     rationale?: string;
     costBias?: string;
-    fallbacks?: readonly string[];
     explored?: boolean;
   } = { tier, confidence };
   if (typeof record["effort"] === "string") decision.effort = record["effort"];
@@ -391,12 +351,6 @@ function parseRouteDecision(payload: unknown): SystemOneRouteDecision | undefine
   }
   if (record["uncertain"] === true) decision.uncertain = true;
   if (record["explored"] === true) decision.explored = true;
-  if (Array.isArray(record["fallbacks"])) {
-    const fallbacks = (record["fallbacks"] as unknown[]).filter(
-      (id): id is string => typeof id === "string" && id.trim().length > 0,
-    );
-    if (fallbacks.length > 0) decision.fallbacks = fallbacks;
-  }
   const rankedTools = record["ranked_tools"];
   if (Array.isArray(rankedTools)) {
     const parsed: RankedTool[] = [];
@@ -418,34 +372,6 @@ function parseRouteDecision(payload: unknown): SystemOneRouteDecision | undefine
     }
     if (parsed.length > 0) decision.rankedTools = parsed;
   }
-  const rankedModels = record["ranked_models"];
-  if (Array.isArray(rankedModels)) {
-    const parsed: RankedModel[] = [];
-    for (const item of rankedModels) {
-      if (!item || typeof item !== "object") continue;
-      const entry = item as Record<string, unknown>;
-      const modelId = entry["model_id"];
-      const tier = entry["tier"];
-      const utility = entry["utility"];
-      if (typeof modelId !== "string" || modelId.trim().length === 0) {
-        continue;
-      }
-      if (typeof tier !== "string") continue;
-      if (typeof utility !== "number" || !Number.isFinite(utility)) continue;
-      const quality = entry["quality"];
-      const cost = entry["cost"];
-      parsed.push({
-        modelId: modelId.trim(),
-        tier,
-        utility,
-        ...(typeof quality === "number" && Number.isFinite(quality)
-          ? { quality }
-          : {}),
-        ...(typeof cost === "number" && Number.isFinite(cost) ? { cost } : {}),
-      });
-    }
-    if (parsed.length > 0) decision.rankedModels = parsed;
-  }
   const rawOpinion = record["jeff1_second_opinion"];
   if (rawOpinion && typeof rawOpinion === "object") {
     const entry = rawOpinion as Record<string, unknown>;
@@ -462,12 +388,6 @@ function parseRouteDecision(payload: unknown): SystemOneRouteDecision | undefine
         ...(typeof rationale === "string" ? { rationale } : {}),
       };
     }
-  }
-  if (
-    typeof record["model_id"] === "string" &&
-    record["model_id"].trim().length > 0
-  ) {
-    decision.modelId = record["model_id"].trim();
   }
   if (Array.isArray(record["task_labels"])) {
     decision.taskLabels = record["task_labels"].filter(
@@ -512,41 +432,36 @@ export function routeTierMargin(
   }
 }
 
-// -- Z0: model routing -----------------------------------------------
+// -- Z1: effort wiring ------------------------------------------------
+
+/** Effort values a route decision may hint at (wire strings). */
+export type SystemOneRouteEffort = "low" | "medium" | "high" | "xhigh" | "ultra";
+
+const SYSTEMONE_ROUTE_EFFORTS: readonly string[] = [
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "ultra",
+];
 
 /**
- * Resolve the model the route wants for this task. Returns a model id only
- * when model routing is on (SpeedStackSessionConfig.modelRouting) AND the
- * route named a model AND it differs from the current one. Otherwise
- * undefined: the pinned model stays. Never throws (fail-open).
- *
- * Independence: thinkingMode never gates model routing; modelRouting never
- * gates the Z1 effort wiring.
+ * Extract the validated effort hint from a route decision (or any raw
+ * route-shaped payload): the `effort` string, trimmed/lowercased, when it
+ * names a known effort level; otherwise undefined. Never throws.
  */
-export function resolveSystemOneModelTarget(input: {
-  route: SystemOneRouteDecision | undefined;
-  modelRouting?: boolean;
-  currentModelId?: string;
-}): string | undefined {
-  try {
-    if (!input.modelRouting) return undefined;
-    // Best-value pick first: the shim's expected-utility ranking names the
-    // top model. Falls back to the route's own model_id when the shim
-    // didn't rank (older shims). The id always comes from the shim — never
-    // hard-coded here.
-    const ranked = input.route?.rankedModels?.[0]?.modelId;
-    const routed = input.route?.modelId;
-    const modelId =
-      ranked && ranked.length > 0 ? ranked : routed;
-    if (!modelId || modelId.length === 0) return undefined;
-    if (input.currentModelId && modelId === input.currentModelId) return undefined;
-    return modelId;
-  } catch {
-    return undefined;
-  }
+export function extractRouteEffortHint(
+  raw: unknown,
+): SystemOneRouteEffort | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const record = raw as Record<string, unknown>;
+  const effort = record["effort"];
+  if (typeof effort !== "string") return undefined;
+  const normalized = effort.trim().toLowerCase();
+  return (SYSTEMONE_ROUTE_EFFORTS as readonly string[]).includes(normalized)
+    ? (normalized as SystemOneRouteEffort)
+    : undefined;
 }
-
-// -- Z1: effort wiring ------------------------------------------------
 
 /**
  * Outcome of resolving what thinking to apply for one task:
@@ -618,8 +533,8 @@ export function adjustEffortForUncertainty(
  * nothing to apply (no route, no usable hint, no explicit tier/mode) — the
  * caller then keeps today's model options untouched.
  *
- * Thinking-mode precedence (see resolveThinkingTier; independent of Z0
- * model routing): thinkingMode "off" -> off; a pinned tier -> that tier;
+ * Thinking-mode precedence (see resolveThinkingTier): thinkingMode
+ * "off" -> off; a pinned tier -> that tier;
  * legacy config.effortTier -> that tier; thinkingMode "auto"/unset -> the
  * route's effort hint.
  */

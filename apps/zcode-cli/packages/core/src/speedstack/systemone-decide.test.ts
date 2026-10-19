@@ -93,7 +93,7 @@ test("decide parses a live-shaped choice response", async () => {
   assert.equal(answer.latencyMs, 200.6);
   assert.equal(answer.backend, "decider");
   assert.equal(calls.length, 1);
-  assert.equal(calls[0]!.input, "http://127.0.0.1:8765/v1/systemone/decide");
+  assert.equal(calls[0]!.input, "http://127.0.0.1:8766/v1/systemone/decide");
   const body = calls[0]!.body as Record<string, unknown>;
   assert.equal(body["type"], "choice");
   assert.deepEqual(body["criteria"], { a: "canary", b: "full rollout" });
@@ -444,7 +444,7 @@ test("permute posts the contract and parses the verdict", async () => {
   assert.equal(verdict.nPerm, 2);
   assert.equal(verdict.seed, 7);
   assert.equal(calls.length, 1);
-  assert.equal(calls[0]!.input, "http://127.0.0.1:8765/v1/systemone/permute");
+  assert.equal(calls[0]!.input, "http://127.0.0.1:8766/v1/systemone/permute");
   const body = calls[0]!.body as Record<string, unknown>;
   assert.equal(body["n_perm"], 2);
   assert.equal(body["seed"], 7);
@@ -528,7 +528,7 @@ test("judgeBatch posts the contract and parses results", async () => {
   assert.equal(batch.results[0]!.status, 200);
   assert.equal(batch.results[1]!.status, 400);
   assert.equal(calls.length, 1);
-  assert.equal(calls[0]!.input, "http://127.0.0.1:8765/v1/systemone/batch");
+  assert.equal(calls[0]!.input, "http://127.0.0.1:8766/v1/systemone/batch");
   const body = calls[0]!.body as Record<string, unknown>;
   assert.deepEqual(body["items"], items);
 });

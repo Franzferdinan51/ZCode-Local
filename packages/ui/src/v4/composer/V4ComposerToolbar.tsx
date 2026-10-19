@@ -76,9 +76,6 @@ import { useShortcutCommandLabel } from "@/shortcuts/useShortcutBindings.js";
 import { logger } from "@/logger.js";
 import { useCodingPlanEntitlements } from "@/settings/model-provider-section/useCodingPlanEntitlements.js";
 import { decodeCustomModelValue, encodeCustomModelValue } from "@/lib/zcodeCustomModelValue.js";
-import {
-  SYSTEMONE_AUTO_MODEL_VALUE,
-} from "@/lib/modelSelectionGroups.js";
 import { buildRegistryModelSelectGroups } from "@/lib/modelSelectionGroups.js";
 import {
   buildCodingPlanUsageSources,
@@ -348,8 +345,6 @@ export interface V4ComposerToolbarProps {
     model: string,
     sourceModel: ModelSelectionSource | null,
   ) => void;
-  /** "Auto (SystemOne)" routing toggle; the pinned model stays as fallback. */
-  onSelectModelRouting?: (enabled: boolean) => void;
   /** 选中思考深度；modelContext 固定本次用户操作的目标模型。 */
   onSelectThought: (thought: string, modelContext: { provider: string; model: string }) => void;
   onSwitchMode: (mode: string) => void;
@@ -377,7 +372,6 @@ function V4ComposerModelControlsImpl({
   activeConfigPicker,
   onConfigPickerOpenChange,
   onSelectModel,
-  onSelectModelRouting,
   onSelectThought,
   onSendCompressionCommand,
   onRecoverCustomModelSelection,
@@ -747,9 +741,7 @@ function V4ComposerModelControlsImpl({
   });
 
   // 当前投影模型的编码值：provider 命中目录则按自定义模型编码，否则回落裸 model id。
-  // modelRouting 开启时触发器显示 "Auto (SystemOne)"（哨兵值），pinned 模型保留为回退。
   const rawModelValue = useMemo(() => {
-    if (draftConfig?.speedStack?.modelRouting) return SYSTEMONE_AUTO_MODEL_VALUE;
     if (!effectiveConfig || !effectiveConfig.model) return "";
     const providerExists = modelSelectionView?.providers.some(
       (candidate) => candidate.providerId === effectiveConfig.provider,
@@ -800,13 +792,6 @@ function V4ComposerModelControlsImpl({
   ]);
   const handleModelValueChange = useCallback(
     (value: string) => {
-      // "Auto (SystemOne)": routing toggle, not a model — keep the pinned model.
-      if (value === SYSTEMONE_AUTO_MODEL_VALUE) {
-        onSelectModelRouting?.(true);
-        return;
-      }
-      // 手动选定具体模型 = 退出 Auto 路由（pinned model 语义）。
-      onSelectModelRouting?.(false);
       const decoded = decodeCustomModelValue(value);
       // 草稿的点击时可见模型可能只存在于 catalog，或已经被最新 draft
       // intent 覆盖，不能让 SessionPane 再从迟到的 prewarm projection 反推。
@@ -869,7 +854,6 @@ function V4ComposerModelControlsImpl({
       effectiveConfig?.provider,
       onRecoverCustomModelSelection,
       onSelectModel,
-      onSelectModelRouting,
       modelSelectionView,
       workspaceIdentity,
       workspacePath,

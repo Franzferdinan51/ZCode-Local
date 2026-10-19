@@ -104,15 +104,15 @@ test("normalizeSpeedStackSessionConfig keeps only valid fields", () => {
     mcpServerAllowlist: ["fs", "", 42],
     unknown: "dropped",
   });
+  // modelRouting is ignored entirely: ZCode-Local never routes models.
   assert.deepEqual(config, {
     effortTier: "high",
-    modelRouting: true,
     thinkingMode: "auto",
     planThenExecute: true,
     mcpServerAllowlist: ["fs"],
   });
   assert.deepEqual(normalizeSpeedStackSessionConfig(null), {});
-  // Invalid thinking mode / non-true modelRouting are dropped (fail-open).
+  // Invalid thinking mode is dropped (fail-open).
   assert.deepEqual(
     normalizeSpeedStackSessionConfig({ thinkingMode: "bogus", modelRouting: "yes" }),
     {},

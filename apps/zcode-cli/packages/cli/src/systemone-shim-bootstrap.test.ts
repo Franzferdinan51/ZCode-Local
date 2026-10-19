@@ -76,7 +76,7 @@ test("findSystemOneDir: returns undefined when nothing is bundled", () => {
 });
 
 test("resolveSystemOneShimBase honors $SYSTEMONE_SHIM_URL", () => {
-  assert.equal(resolveSystemOneShimBase({}), "http://127.0.0.1:8765");
+  assert.equal(resolveSystemOneShimBase({}), "http://127.0.0.1:8766");
   assert.equal(
     resolveSystemOneShimBase({ SYSTEMONE_SHIM_URL: "http://macmini:8765/" }),
     "http://macmini:8765",
@@ -87,15 +87,15 @@ test("resolveSystemOneShimBase honors $SYSTEMONE_SHIM_URL", () => {
   );
 });
 
-test("resolveSystemOneSpawnPort takes the shim URL port, else 8765", () => {
-  assert.equal(resolveSystemOneSpawnPort({}), 8765);
+test("resolveSystemOneSpawnPort takes the shim URL port, else 8766", () => {
+  assert.equal(resolveSystemOneSpawnPort({}), 8766);
   assert.equal(
     resolveSystemOneSpawnPort({ SYSTEMONE_SHIM_URL: "http://127.0.0.1:9999" }),
     9999,
   );
   assert.equal(
     resolveSystemOneSpawnPort({ SYSTEMONE_SHIM_URL: "not a url" }),
-    8765,
+    8766,
   );
 });
 

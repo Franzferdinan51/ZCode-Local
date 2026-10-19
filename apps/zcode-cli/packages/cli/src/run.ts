@@ -143,12 +143,12 @@ const normalizePromptMode = (value: string | undefined): CliPermissionMode | und
   throw new Error(`Unsupported --mode value: ${value}. Supported modes: build, edit, plan, yolo.`);
 };
 
-// 3.24.0: --model auto enables SystemOne per-task model routing.
+// Model routing was removed from ZCode-Local: the session always runs the
+// model selected in the desktop app / config, so --model accepts nothing.
 const normalizeCliModel = (value: string | undefined): GlobalOptions["model"] => {
   if (value === undefined) return undefined;
-  if (value.toLowerCase() === "auto") return "auto";
   throw new Error(
-    `Unsupported --model value: ${value}. Only "auto" is supported (SystemOne model routing).`,
+    `Unsupported --model value: ${value}. ZCode-Local does not route models — select the model in the desktop app or config.`,
   );
 };
 

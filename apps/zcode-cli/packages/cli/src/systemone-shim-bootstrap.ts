@@ -5,16 +5,16 @@
 // At ZCode startup (CLI, desktop-GUI agent sessions, and server-spawned
 // agents all run through the CLI bundle's main()), probe the SystemOne
 // shim (GET $SYSTEMONE_SHIM_URL/healthz, default
-// http://127.0.0.1:8765/healthz). When nothing answers on a LOCAL shim
+// http://127.0.0.1:8766/healthz). When nothing answers on a LOCAL shim
 // URL, spawn the shim bundled with the ZCode release
 // (`<release>/systemone`, the `systemone` Python package) as a detached
 // background process:
 //
-//   systemone serve --port 8765 [--engine auto|local|sglang|jevk5|onnx|jev|kev|clef]
+//   systemone serve --port 8766 [--engine auto|local|sglang|jevk5|onnx|jev|kev|clef]
 // (preferred when the `systemone` console script is on PATH; the engine
 // flag defaults to $SYSTEMONE_ENGINE, else auto), else:
 //
-//   python3.11 -m systemone.shim --port 8765 [--daemonize on Windows]
+//   python3.11 -m systemone.shim --port 8766 [--daemonize on Windows]
 // (+ --daemonize on win32: the shim self-detaches from sshd's
 // KILL_ON_JOB_CLOSE job object; see systemone/shim.py)
 //
@@ -35,7 +35,7 @@
 //   ZCODE_SYSTEMONE_WAIT_MS  max ms to wait for healthz after spawning
 //                            (default 30000)
 //   SYSTEMONE_SHIM_URL       shim base URL to probe (default
-//                            http://127.0.0.1:8765); remote URLs are
+//                            http://127.0.0.1:8766); remote URLs are
 //                            never auto-started
 //   SYSTEMONE_ENGINE         engine the spawned shim serves
 //                            (auto|local|sglang|jevk5|onnx|jev|kev|clef)
@@ -53,7 +53,7 @@ import {
   resolveSystemOneShimUrl,
 } from "@zcode/core";
 
-export const SYSTEMONE_SHIM_PORT = 8765;
+export const SYSTEMONE_SHIM_PORT = 8766;
 export const SYSTEMONE_HEALTHZ_URL = `http://127.0.0.1:${SYSTEMONE_SHIM_PORT}/healthz`;
 
 /**
@@ -79,7 +79,7 @@ export function resolveSystemOneHealthzUrl(
 
 /**
  * Port a locally spawned shim should listen on: the resolved shim base's
- * explicit port, else 8765. Unparseable bases fail open to 8765.
+ * explicit port, else 8766. Unparseable bases fail open to 8766.
  * Exported for tests.
  */
 export function resolveSystemOneSpawnPort(

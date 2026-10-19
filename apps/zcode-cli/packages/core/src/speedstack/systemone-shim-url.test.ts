@@ -16,7 +16,7 @@ import {
 
 test("resolveSystemOneShimUrl: localhost default when unset", () => {
   assert.equal(resolveSystemOneShimUrl({}), DEFAULT_SYSTEMONE_SHIM_URL);
-  assert.equal(DEFAULT_SYSTEMONE_SHIM_URL, "http://127.0.0.1:8765");
+  assert.equal(DEFAULT_SYSTEMONE_SHIM_URL, "http://127.0.0.1:8766");
 });
 
 test("resolveSystemOneShimUrl: env override wins, trims junk", () => {
@@ -37,7 +37,7 @@ test("resolveSystemOneShimUrl: env override wins, trims junk", () => {
 test("systemOneShimEndpoint: joins paths onto the resolved base", () => {
   assert.equal(
     systemOneShimEndpoint("/v1/systemone/route", {}),
-    "http://127.0.0.1:8765/v1/systemone/route",
+    "http://127.0.0.1:8766/v1/systemone/route",
   );
   assert.equal(
     systemOneShimEndpoint("/healthz", {

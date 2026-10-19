@@ -67,7 +67,6 @@ import { appendBrowserTurnScreenshot } from "./browser-turn-screenshot.js";
 import { clearBrowserTurnState } from "../../repl/browser-turn-state.js";
 import {
   applySubmissionExecutionState,
-  applySystemOneModelRetarget,
   createTurnModel,
 } from "./turn-model.js";
 import { createRuntimeModel } from "./runtime-model.js";
@@ -75,7 +74,7 @@ import {
   normalizeSpeedStackSessionConfig,
   resolveThinkingTier,
 } from "../../speedstack/effort-tiers.js";
-import { extractRouteEffortHint } from "@zcode/shared/systemone-scorer";
+import { extractRouteEffortHint } from "../../speedstack/systemone-route.js";
 import { rebuildContextPrefix } from "./context-refresh.js";
 
 const TARGET_RUN_HEARTBEAT_MS = 15_000;
@@ -199,30 +198,16 @@ export async function executeTurnCommand(
       beginLocalTurnPreparation(turnTraceContext, "execution")();
       throwIfTurnAborted(turnAbortSignal);
       // Speed Stack: one SystemOne route lookup per task. The decision
-      // drives Z0 model routing ("Auto (SystemOne)"), the Z1 effort override
-      // and the Z2 MCP attach policy. Z0/Z1 are fully independent: the route
-      // may move the model while thinking is pinned/off, and a pinned/off
-      // thinking mode never blocks the model retarget. Fail-open: shim
-      // down/unreachable -> undefined -> today's behavior exactly.
+      // drives the Z1 effort override and the Z2 MCP attach policy only —
+      // the session model is always the user's selected model; the route
+      // never retargets it. Fail-open: shim down/unreachable -> undefined
+      // -> today's behavior exactly.
       //
       // Per-submit speed-stack knobs (desktop composer / CLI flags) merge
       // over the runtime's session config for this turn.
       const intentSpeedStack = normalizeSpeedStackSessionConfig(options?.intent?.speedStack);
       this.speedStackConfig = { ...this.speedStackConfig, ...intentSpeedStack };
       const routeDecision = await this.ensureSystemOneRouteDecision(input);
-      // Z0: retarget the session model in place when model routing is on.
-      const retarget = await applySystemOneModelRetarget(
-        this,
-        routeDecision,
-        admittedModelSelection,
-        turnTraceContext,
-      );
-      if (retarget.selection) {
-        // This turn (and, via the persisted session selection, the session)
-        // runs on the routed model. The Z1 effort override still applies on
-        // top in createTurnModel via the shared route value.
-        admittedModelSelection = retarget.selection;
-      }
       // Stash per-turn routing facts for transparency surfaces (UI chip,
       // headless logs): the actual model + applied thinking for this task.
       // The effort is the RESOLVED tier (same precedence Z1 applies), not
@@ -240,18 +225,14 @@ export async function executeTurnCommand(
         tier: routeDecision?.tier,
         confidence: routeDecision?.confidence,
         effort: appliedEffort,
-        modelRouting: this.speedStackConfig.modelRouting === true,
         thinkingMode: this.speedStackConfig.thinkingMode,
-        retargetedModelId: retarget.retargetedModelId,
         modelId: admittedModelSelection?.modelId,
       };
-      // Pinned-model routing facts: when a route exists but Z0 did not
-      // retarget (routing off / no target / same model), the ModelSelected
-      // above never fired — emit the routing facts here with the admitted
-      // pinned model and the resolved effort so the per-response chip stays
-      // fresh. Retargeting already emitted; never double-emit.
+      // Routing facts for the per-response chip: when a route exists, emit
+      // the routing facts with the admitted (user-selected) model and the
+      // resolved effort so the chip stays fresh.
       // Fail-open: transparency-only, never breaks the turn.
-      if (routeDecision?.tier && !retarget.selection && admittedModelSelection) {
+      if (routeDecision?.tier && admittedModelSelection) {
         try {
           const pinnedModel = createRuntimeModel(this, {
             selection: admittedModelSelection,
@@ -285,7 +266,6 @@ export async function executeTurnCommand(
           effort: appliedEffort,
           confidence: routeDecision.confidence,
           modelId: admittedModelSelection?.modelId,
-          retargetedModelId: retarget.retargetedModelId ?? null,
           thinkingMode: this.speedStackConfig.thinkingMode ?? null,
         });
       }

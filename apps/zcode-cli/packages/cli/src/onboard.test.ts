@@ -164,7 +164,7 @@ test("runOnboardCommand: --yes on non-TTY accepts all defaults without prompting
   assert.deepEqual(state?.systemone, {
     enabled: true,
     jeff1: true,
-    shimUrl: "http://127.0.0.1:8765",
+    shimUrl: "http://127.0.0.1:8766",
     decideFallback: true,
   });
   assert.equal(state?.inference?.mode, "auto");
@@ -481,7 +481,7 @@ test("wizard: invalid shim URL falls back to the default with a warning", async 
   assert.equal(code, 0);
   assert.match(io.log.join("\n"), /doesn't look like a shim URL/);
   const state = readOnboardingState({}, home);
-  assert.equal(state?.systemone?.shimUrl, "http://127.0.0.1:8765");
+  assert.equal(state?.systemone?.shimUrl, "http://127.0.0.1:8766");
 });
 
 test("wizard: shim down warns and completes in degraded mode", async () => {
@@ -550,7 +550,7 @@ test("wizard --yes: shim URL defaults and the decide fallback stays on", async (
   });
   assert.equal(code, 0);
   const state = readOnboardingState({}, home);
-  assert.equal(state?.systemone?.shimUrl, "http://127.0.0.1:8765");
+  assert.equal(state?.systemone?.shimUrl, "http://127.0.0.1:8766");
   assert.equal(state?.systemone?.decideFallback, true);
 });
 

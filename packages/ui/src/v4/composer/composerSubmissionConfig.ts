@@ -8,7 +8,7 @@ export interface ComposerSubmissionConfig {
   modelSelection: ModelSelection;
   mode: SubmissionMode;
   planEnabled: boolean;
-  /** SystemOne knobs (modelRouting + thinkingMode); absent = defaults. */
+  /** SystemOne knobs (thinkingMode); absent = defaults. */
   speedStack?: SpeedStackWireConfig;
 }
 

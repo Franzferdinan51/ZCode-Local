@@ -16,7 +16,7 @@
 // - Everything SystemOne is advisory and fail-open; the kill switches
 //   (ZCODE_SYSTEMONE=0, ZCODE_SPEEDSTACK_PRUNE=0, ZCODE_SYSTEMONE_DECIDE=0,
 //   SYSTEMONE_JEFF1=0) always win. The shim URL defaults to
-//   $SYSTEMONE_SHIM_URL (else localhost:8765) and is overridable.
+//   $SYSTEMONE_SHIM_URL (else localhost:8766) and is overridable.
 // - Headless-friendly: non-TTY stdin prints a note and exits 0;
 //   --yes accepts every default non-interactively.
 
@@ -96,7 +96,7 @@ export interface OnboardingState {
   systemone?: {
     enabled: boolean;
     jeff1: boolean;
-    /** Shim base URL chosen in the wizard (default: $SYSTEMONE_SHIM_URL or localhost:8765). */
+    /** Shim base URL chosen in the wizard (default: $SYSTEMONE_SHIM_URL or localhost:8766). */
     shimUrl?: string;
     /** Whether the decide fallback for plan ranking stays enabled. */
     decideFallback?: boolean;
@@ -756,7 +756,7 @@ export async function runOnboardingWizard(
       out("  That shim URL is remote — start the shim on its own host;");
       out("  ZCode won't start a local shim for a remote URL.");
     } else {
-      out("  To run it yourself: python3.11 -m systemone.shim --port 8765");
+      out("  To run it yourself: python3.11 -m systemone.shim --port 8766");
       if (!yes) {
         const startAnswer = await ask("Start the bundled shim now? [y/N]: ", "n");
         if (/^(y|yes)$/i.test(startAnswer)) {

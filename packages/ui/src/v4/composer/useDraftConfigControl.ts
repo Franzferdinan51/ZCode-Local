@@ -99,7 +99,6 @@ interface DraftConfigControl {
   ) => () => void;
   handleDraftSelectModel: (modelProvider: string, model: string) => void;
   handleDraftSelectThought: (thought: string) => void;
-  handleDraftSelectModelRouting: (enabled: boolean) => void;
   handleDraftSwitchMode: (mode: string) => void;
 }
 
@@ -504,21 +503,6 @@ export function useDraftConfigControl(params: {
     [updateDraftConfig, modelSelectionView],
   );
 
-  /**
-   * "Auto (SystemOne)" model routing toggle. The pinned model stays as the
-   * fallback; modelRouting=true lets the Z0 retarget swap it per task.
-   * Defaults unchanged: absent/false = today's behavior.
-   */
-  const handleDraftSelectModelRouting = useCallback(
-    (enabled: boolean) => {
-      updateDraftConfig((current) => ({
-        ...current,
-        speedStack: { ...current.speedStack, modelRouting: enabled },
-      }));
-    },
-    [updateDraftConfig],
-  );
-
   const handleDraftSwitchMode = useCallback(
     (mode: string) => {
       if (mode === "plan" || mode === "plan-off") {
@@ -554,7 +538,6 @@ export function useDraftConfigControl(params: {
     captureAcceptedModelSelection,
     handleDraftSelectModel,
     handleDraftSelectThought,
-    handleDraftSelectModelRouting,
     handleDraftSwitchMode,
   };
 }

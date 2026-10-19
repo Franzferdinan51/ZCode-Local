@@ -54,8 +54,7 @@ export const DEFAULT_PLANNER_MAX_STEPS = 12;
 export const DEFAULT_PLANNER_MAX_TOOL_CALLS = 30;
 
 export interface PlanExecuteRouteInput {
-  /** Router advisory model id (SystemOne route decision modelId). */
-  readonly routeModelId?: string | undefined;
+  /** Route tier (advisory context only; never selects a model). */
   readonly routeTier?: string | undefined;
 }
 
@@ -141,9 +140,6 @@ export function resolvePlanExecuteModels(
   const planner =
     (isAvailableModelId(available, preferred.plannerModelId)
       ? preferred.plannerModelId
-      : undefined) ??
-    (isAvailableModelId(available, route.routeModelId)
-      ? (route.routeModelId as string)
       : undefined) ??
     firstUsableModel(available);
   if (!planner) {

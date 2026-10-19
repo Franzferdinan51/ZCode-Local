@@ -90,7 +90,6 @@ export async function runPlanThenExecuteTurn(
     roleModels = resolvePlanExecuteModels(
       available,
       {
-        routeModelId: options.routeDecision?.modelId,
         routeTier: options.routeDecision?.tier,
       },
       readPlanExecuteModelPreferences(),

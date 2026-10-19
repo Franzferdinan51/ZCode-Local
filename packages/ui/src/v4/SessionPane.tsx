@@ -1233,7 +1233,6 @@ export function SessionPane({
     resolveInitialDraftConfig,
     handleDraftSelectModel,
     handleDraftSelectThought,
-    handleDraftSelectModelRouting,
     handleDraftSwitchMode,
     promoteComposerDraft,
     captureAcceptedModelSelection,
@@ -3414,13 +3413,6 @@ export function SessionPane({
     [handleDraftSelectThought],
   );
 
-  const handleSelectModelRouting = useCallback(
-    (enabled: boolean) => {
-      handleDraftSelectModelRouting(enabled);
-    },
-    [handleDraftSelectModelRouting],
-  );
-
   const handleRecoverCustomModelSelection = useCallback(
     async (value: string, sourceModel: ModelSelectionSource | null) => {
       const decoded = decodeCustomModelValue(value);
@@ -4340,7 +4332,6 @@ export function SessionPane({
       onComposerRestoreApplied={handleComposerRestoreApplied}
       onStop={handleStopFromButton}
       onSelectModel={handleSelectModel}
-      onSelectModelRouting={handleSelectModelRouting}
       onSelectThought={handleSelectThought}
       onSwitchMode={handleSwitchMode}
       onOpenRunningBackgroundWorks={

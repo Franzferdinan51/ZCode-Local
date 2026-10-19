@@ -133,9 +133,7 @@ export interface AgentRuntimeInternal
     tier?: string;
     confidence?: number;
     effort?: string;
-    modelRouting?: boolean;
     thinkingMode?: string;
-    retargetedModelId?: string;
     modelId?: string;
   };
   subagentPort?: SubagentPort;

@@ -36,7 +36,6 @@ export async function ensureSystemOneRouteDecision(
       confidence: decision.confidence,
       effort: decision.effort,
       event: "systemone.route.fetched",
-      modelId: decision.modelId,
       module: "core.runtime",
       taskLabels: decision.taskLabels,
       tier: decision.tier,

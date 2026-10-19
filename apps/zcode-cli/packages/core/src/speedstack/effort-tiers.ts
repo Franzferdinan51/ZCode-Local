@@ -14,10 +14,8 @@
 // Thinking modes (3.24.0): the desktop thinking selector offers
 // Off / Low / Medium / High / XHigh / Ultra / Auto. `ThinkingMode` captures
 // that choice: "off" disables thinking, a tier pins the effort, "auto" lets
-// the SystemOne route decide per task. Model routing (`modelRouting`) is a
-// fully independent switch: the route may retarget the session model only
-// when it is on, and the thinking mode never gates model routing (nor the
-// reverse).
+// the SystemOne route decide per task. The route informs effort only — it
+// never selects or swaps the session model.
 
 import type { ModelOptions } from "@zcode/contracts";
 import { resolveTurnBudgets, type TurnBudgets } from "./turn-budgets.js";
@@ -144,16 +142,8 @@ export interface SpeedStackSessionConfig {
   /** Reasoning effort tier for this task (legacy explicit pin). */
   effortTier?: EffortTier;
   /**
-   * Model routing switch (3.24.0). When true, a SystemOne route decision may
-   * retarget the session model per task ("Auto (SystemOne)" in the desktop
-   * model picker). False/undefined = the pinned model never moves.
-   * Independent of thinkingMode: neither gates the other.
-   */
-  modelRouting?: boolean;
-  /**
    * Thinking selector mode (3.24.0): "off" disables thinking, a tier pins
    * the effort, "auto"/undefined lets the route decide per task.
-   * Independent of modelRouting: neither gates the other.
    */
   thinkingMode?: ThinkingMode;
   /** When true, run plan-then-execute instead of a single reactive loop. */
@@ -193,7 +183,8 @@ export function normalizeSpeedStackSessionConfig(
   const config: SpeedStackSessionConfig = {};
   const tier = parseEffortTier(raw["effortTier"]);
   if (tier) config.effortTier = tier;
-  if (raw["modelRouting"] === true) config.modelRouting = true;
+  // Note: a legacy `modelRouting` key in persisted config is ignored —
+  // ZCode-Local never routes models; the user's selected model always runs.
   const thinkingMode = parseThinkingMode(raw["thinkingMode"]);
   if (thinkingMode) config.thinkingMode = thinkingMode;
   // Z3: preserve an explicit boolean pin — false forces direct execution
@@ -231,7 +222,7 @@ export function normalizeSpeedStackSessionConfig(
 /**
  * Resolve the effective effort tier: explicit session config wins, then the
  * SystemOne route hint (see extractRouteEffortHint in
- * packages/shared/src/systemone-scorer.ts), then undefined (caller keeps
+ * speedstack/systemone-route.ts), then undefined (caller keeps
  * current behavior). Legacy helper kept for the explicit-pin path; new code
  * should prefer resolveThinkingTier, which also honors thinkingMode/off.
  */
@@ -262,7 +253,7 @@ export type ResolvedThinking =
 /**
  * Resolve what thinking to apply for one task.
  *
- * Precedence (model/thinking independence: this never looks at modelRouting):
+ * Precedence:
  *   1. thinkingMode === "off"            -> thinking off
  *   2. thinkingMode is a tier             -> pinned tier (user's explicit choice)
  *   3. config.effortTier (legacy pin)     -> that tier
