@@ -2,8 +2,9 @@ import {
   DEFAULT_LM_STUDIO_API_KEY,
   lmStudioV0ModelsUrl,
   lmStudioV1ModelsUrl,
-  mergeLmStudioModelCatalog,
+  mergeLmStudioModelCatalogEntries,
   resolveLmStudioBaseUrl,
+  type LmStudioModelListEntry,
 } from "@zcode/provider";
 
 export interface FetchLmStudioModelCatalogOptions {
@@ -51,9 +52,9 @@ async function readJson(
  * Does not start or load models; missing endpoints fall through to the next.
  * 两个端点并行请求：本地服务任一慢响应不再拖慢整体（约省一半等待时间）。
  */
-export async function fetchLmStudioModelCatalog(
+export async function fetchLmStudioModelCatalogEntries(
   options: FetchLmStudioModelCatalogOptions = {},
-): Promise<readonly string[]> {
+): Promise<readonly LmStudioModelListEntry[]> {
   const baseUrl = resolveLmStudioBaseUrl(options.baseUrl);
   const request = options.request ?? globalThis.fetch;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -62,8 +63,15 @@ export async function fetchLmStudioModelCatalog(
     readJson(lmStudioV0ModelsUrl(baseUrl), request, headers, timeoutMs),
     readJson(lmStudioV1ModelsUrl(baseUrl), request, headers, timeoutMs),
   ]);
-  return mergeLmStudioModelCatalog({
+  return mergeLmStudioModelCatalogEntries({
     ...(v0 === undefined ? {} : { v0 }),
     ...(v1 === undefined ? {} : { v1 }),
   });
+}
+
+export async function fetchLmStudioModelCatalog(
+  options: FetchLmStudioModelCatalogOptions = {},
+): Promise<readonly string[]> {
+  const entries = await fetchLmStudioModelCatalogEntries(options);
+  return Object.freeze(entries.map((entry) => entry.id));
 }

@@ -2,12 +2,13 @@ import {
   applyLmStudioCatalogToProviderLayer,
   LM_STUDIO_PROVIDER_ID,
   preferLmStudioModelId,
+  type LmStudioModelListEntry,
   type ProviderConfigLayerSnapshot,
   type ProviderSource,
 } from "@zcode/provider";
-import { fetchLmStudioModelCatalog } from "./lm-studio-model-catalog.js";
+import { fetchLmStudioModelCatalogEntries } from "./lm-studio-model-catalog.js";
 
-export type LmStudioCatalogFetcher = typeof fetchLmStudioModelCatalog;
+export type LmStudioCatalogFetcher = typeof fetchLmStudioModelCatalogEntries;
 
 export interface LmStudioCatalogOverlaySourceOptions {
   readonly inner: ProviderSource<ProviderConfigLayerSnapshot>;
@@ -21,7 +22,7 @@ const DEFAULT_CACHE_TTL_MS = 30_000;
 
 interface CatalogCacheEntry {
   readonly key: string;
-  readonly modelIds: readonly string[];
+  readonly entries: readonly LmStudioModelListEntry[];
   readonly storedAt: number;
 }
 
@@ -37,11 +38,11 @@ export class LmStudioCatalogOverlaySource implements ProviderSource<ProviderConf
   readonly #cacheTtlMs: number;
   readonly #now: () => number;
   #cached: CatalogCacheEntry | null = null;
-  #inflight: Promise<readonly string[]> | null = null;
+  #inflight: Promise<readonly LmStudioModelListEntry[]> | null = null;
 
   constructor(options: LmStudioCatalogOverlaySourceOptions) {
     this.#inner = options.inner;
-    this.#fetchCatalog = options.fetchCatalog ?? fetchLmStudioModelCatalog;
+    this.#fetchCatalog = options.fetchCatalog ?? fetchLmStudioModelCatalogEntries;
     this.#cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
     this.#now = options.now ?? Date.now;
   }
@@ -55,15 +56,24 @@ export class LmStudioCatalogOverlaySource implements ProviderSource<ProviderConf
       provider.access && "apiKey" in provider.access ? provider.access.apiKey : undefined;
     const apiKey = rawKey ?? undefined;
     try {
-      const modelIds = await this.#readCatalog(baseUrl, apiKey);
-      const ordered = preferLmStudioModelId(modelIds, process.env.LM_STUDIO_MODEL);
-      return applyLmStudioCatalogToProviderLayer(snapshot, ordered);
+      const entries = await this.#readCatalog(baseUrl, apiKey);
+      const ordered = preferLmStudioModelId(
+        entries.map((entry) => entry.id),
+        process.env.LM_STUDIO_MODEL,
+      );
+      const visionModelIds = entries
+        .filter((entry) => entry.vision && ordered.includes(entry.id))
+        .map((entry) => entry.id);
+      return applyLmStudioCatalogToProviderLayer(snapshot, ordered, visionModelIds);
     } catch {
       return snapshot;
     }
   }
 
-  async #readCatalog(baseUrl?: string, apiKey?: string): Promise<readonly string[]> {
+  async #readCatalog(
+    baseUrl?: string,
+    apiKey?: string,
+  ): Promise<readonly LmStudioModelListEntry[]> {
     const key = `${baseUrl ?? ""}\0${apiKey ?? ""}`;
     const cached = this.#cached;
     if (
@@ -72,18 +82,18 @@ export class LmStudioCatalogOverlaySource implements ProviderSource<ProviderConf
       this.#cacheTtlMs > 0 &&
       this.#now() - cached.storedAt < this.#cacheTtlMs
     ) {
-      return cached.modelIds;
+      return cached.entries;
     }
     if (!this.#inflight) {
       this.#inflight = this.#fetchCatalog({ baseUrl, apiKey }).finally(() => {
         this.#inflight = null;
       });
     }
-    const modelIds = await this.#inflight;
+    const entries = await this.#inflight;
     if (this.#cacheTtlMs > 0) {
-      this.#cached = { key, modelIds, storedAt: this.#now() };
+      this.#cached = { key, entries, storedAt: this.#now() };
     }
-    return modelIds;
+    return entries;
   }
 
   onDidChange(listener: (reason: string) => void): () => void {

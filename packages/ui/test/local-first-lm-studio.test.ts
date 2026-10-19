@@ -8,12 +8,14 @@ import {
   DEFAULT_LM_STUDIO_BASE_URL,
   LM_STUDIO_PROVIDER_ID,
   mergeLmStudioModelCatalog,
+  mergeLmStudioModelCatalogEntries,
   ModelConfigRules,
   parseLmStudioModelsJson,
   preferLmStudioModelId,
   ProviderConfigMap,
   ProviderConfigResolver,
   resolveInitialModelSelection,
+  type LmStudioModelListEntry,
 } from "../../provider/src/index.js";
 import { decodeZCodeBuiltinRelease } from "../../provider-node/src/zcode-builtin-release.js";
 import { fetchLmStudioModelCatalog } from "../../provider-node/src/lm-studio-model-catalog.js";
@@ -254,8 +256,12 @@ function overlaySnapshot(providerFields: Record<string, unknown> = {}) {
   return { revision: "r", providers };
 }
 
+function catalogEntry(id: string, vision = false): LmStudioModelListEntry {
+  return { id, loaded: true, embedding: false, chat: true, vision };
+}
+
 function overlaySource(
-  fetchCatalog: () => Promise<readonly string[]>,
+  fetchCatalog: () => Promise<readonly (string | LmStudioModelListEntry)[]>,
   options: Record<string, unknown> = {},
 ) {
   // Single-id catalogs make preferLmStudioModelId a no-op, so these tests are
@@ -265,7 +271,10 @@ function overlaySource(
       read: async () => overlaySnapshot(),
       onDidChange: () => () => {},
     } as never,
-    fetchCatalog: fetchCatalog as never,
+    fetchCatalog: (async () =>
+      (await fetchCatalog()).map((entry) =>
+        typeof entry === "string" ? catalogEntry(entry) : entry,
+      )) as never,
     ...(options as Record<string, never>),
   });
 }
@@ -331,4 +340,54 @@ test("usable LM Studio registry resolves with no login concept", () => {
   );
   assert.ok(usable.length > 0);
   assert.equal(usable[0]?.providerId, LM_STUDIO_PROVIDER_ID);
+});
+
+test("catalog parse marks vlm entries as vision-capable and the merge keeps it", () => {
+  const parsed = parseLmStudioModelsJson(v0Fixture);
+  assert.equal(parsed.find((entry) => entry.id === "vision-loaded")?.vision, true);
+  assert.equal(parsed.find((entry) => entry.id === "qwen-loaded")?.vision, false);
+  const entries = mergeLmStudioModelCatalogEntries({ v0: v0Fixture, v1: v1Fixture });
+  assert.deepEqual(
+    entries.map((entry) => entry.id),
+    expectedPickerIds,
+  );
+  // v1 carries no type info; the v0 vlm marking must survive the merge.
+  assert.equal(entries.find((entry) => entry.id === "vision-loaded")?.vision, true);
+  assert.equal(entries.find((entry) => entry.id === "qwen-loaded")?.vision, false);
+});
+
+test("catalog overlay makes vlm models resolve with image input support", async () => {
+  const release = loadBuiltinRelease();
+  const source = new LmStudioCatalogOverlaySource({
+    inner: {
+      read: async () => ({
+        revision: "test-builtin",
+        providers: release.config.providers,
+        models: release.config.modelConfigRules,
+      }),
+      onDidChange: () => () => {},
+    } as never,
+    fetchCatalog: (async () =>
+      mergeLmStudioModelCatalogEntries({ v0: v0Fixture, v1: v1Fixture })) as never,
+    cacheTtlMs: 0,
+  });
+  const overlaid = await source.read();
+  const resolution = new ProviderConfigResolver().resolve({
+    zcodeBuiltinProviders: overlaid.providers,
+    zcodeBuiltinProviderTemplates: release.config.providerTemplates,
+    personalProviders: ProviderConfigMap.empty(),
+    zcodeBuiltinModelRules: overlaid.models,
+    personalModels: ModelConfigRules.empty(),
+    accountProviders: ProviderConfigMap.empty(),
+  });
+  const lm = resolution.registryProviders.find(
+    (provider) => provider.providerId === LM_STUDIO_PROVIDER_ID,
+  );
+  assert.ok(lm);
+  const vision = lm.models.find((model) => model.modelId === "vision-loaded");
+  assert.ok(vision, "vlm fixture model must be in the registry");
+  assert.equal(vision.config.properties.inputFormat?.supportsImage, true);
+  const textOnly = lm.models.find((model) => model.modelId === "qwen-loaded");
+  assert.ok(textOnly);
+  assert.equal(textOnly.config.properties.inputFormat?.supportsImage, false);
 });
