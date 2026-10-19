@@ -1,11 +1,5 @@
 import type { ModelSelectionView } from "@zcode/services";
-import { completeNewModelSelection } from "@zcode/provider";
-import {
-  candidatesFromSelectionView,
-  suggestRoute,
-} from "@zcode/shared/auto-router";
 import { readComposerRecent, resolveDraftInitialModelSelection } from "@/lib/composerRecent.js";
-import { readAutoRouteEnabled } from "@/lib/autoRoutePreference.js";
 import {
   persistV4ComposerDraft,
   readV4ComposerDraft,
@@ -28,37 +22,9 @@ export function initializeNewTaskDraft(
     planEnabled: false,
     modelSelection:
       recent?.modelSelection ??
-      resolveAutoRouteSelection(draft.text, workspacePath, workspaceIdentity, view) ??
       resolveDraftInitialModelSelection(view, null).selection ??
       undefined,
   };
-}
-
-/**
- * Optional smart pick for new drafts. Only applies when the toggle is on, no
- * recent selection exists, and the user has no explicit configured default —
- * an explicit route always wins over the heuristic.
- */
-function resolveAutoRouteSelection(
-  text: string,
-  workspacePath: string,
-  workspaceIdentity: string | undefined,
-  view: ModelSelectionView,
-) {
-  if (!text.trim()) return undefined;
-  if (!readAutoRouteEnabled(workspacePath, workspaceIdentity)) return undefined;
-  if (view.preferredSource === "configured-default") return undefined;
-  const suggestion = suggestRoute(candidatesFromSelectionView(view), {
-    textSample: text.slice(0, 4000),
-    approxInputChars: text.length,
-  });
-  if (!suggestion) return undefined;
-  return (
-    completeNewModelSelection(view, {
-      providerId: suggestion.providerId,
-      modelId: suggestion.modelId,
-    }) ?? undefined
-  );
 }
 
 /** 在激活首次导入的 Session 前调用；不依赖模型可执行，也不把原新任务正文带入分享。 */

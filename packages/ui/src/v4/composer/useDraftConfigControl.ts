@@ -29,7 +29,6 @@ import { useZCodeSessionService } from "@/hooks/useZCodeSessionService.js";
 import { useSettings } from "@/hooks/useSettingService.js";
 import { parseModelPickerValue } from "@/lib/zcodeSessionProjection.js";
 import { initializeNewTaskDraft } from "@/v4/composer/newTaskDraft.js";
-import { useMlRouteUpgrade } from "@/v4/composer/useMlRouteUpgrade.js";
 import {
   clearV4ComposerDraft,
   persistV4ComposerDraft,
@@ -238,22 +237,6 @@ export function useDraftConfigControl(params: {
     },
     [scopeKey, workspacePath, workspaceIdentity, scopeId],
   );
-  const updateMlRouteModelSelection = useCallback(
-    (selection: ModelSelection) => {
-      updateComposerDraft((current) => ({ ...current, modelSelection: selection }));
-    },
-    [updateComposerDraft],
-  );
-  useMlRouteUpgrade({
-    scopeKey,
-    initializeAsNewTask,
-    draftText: draft.text,
-    draftSelection: draft.modelSelection,
-    modelSelectionView,
-    workspacePath,
-    workspaceIdentity,
-    updateModelSelection: updateMlRouteModelSelection,
-  });
   const updateDraftConfig = useCallback(
     (update: (current: Partial<SessionConfigState>) => Partial<SessionConfigState>) => {
       const next = update(draftConfigRef.current);

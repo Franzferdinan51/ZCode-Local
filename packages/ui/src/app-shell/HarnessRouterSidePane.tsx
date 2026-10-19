@@ -12,22 +12,11 @@ import {
   TerminalIcon,
 } from "lucide-react";
 import type { ModelSelection } from "@zcode/shared";
-import {
-  candidatesFromSelectionView,
-  suggestRoute,
-} from "@zcode/shared/auto-router";
 import { Button } from "@/components/ui/button.js";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
 import { useServices } from "@/hooks/useServices.js";
 import { useModelSelectionServiceView } from "@/hooks/useModelSelectionView.js";
-import {
-  V4_DRAFT_SCOPE_ROOT,
-  readV4ComposerDraft,
-} from "@/v4/composer/composerDraftStore.js";
-import {
-  readAutoRouteEnabled,
-  writeAutoRouteEnabled,
-} from "@/lib/autoRoutePreference.js";
+import { V4_DRAFT_SCOPE_ROOT } from "@/v4/composer/composerDraftStore.js";
 import { logger } from "@/logger.js";
 import { cn } from "@/components/lib/utils.js";
 import {
@@ -68,9 +57,6 @@ export function HarnessRouterSidePane({
   const [sessionNotice, setSessionNotice] = useState<string | null>(null);
   const [resolvedCommands, setResolvedCommands] = useState<Record<string, string | null> | null>(
     null,
-  );
-  const [autoRouteEnabled, setAutoRouteEnabled] = useState(() =>
-    readAutoRouteEnabled(workspacePath, workspaceIdentity),
   );
 
   useEffect(() => {
@@ -139,61 +125,6 @@ export function HarnessRouterSidePane({
     },
     [activeTaskId, intl, workspacePath],
   );
-
-  const toggleAutoRoute = useCallback(() => {
-    setAutoRouteEnabled((current) => {
-      const next = !current;
-      writeAutoRouteEnabled(workspacePath, next, workspaceIdentity);
-      logger.info("[harness-router] auto-route toggled", { enabled: next, workspacePath });
-      return next;
-    });
-    setSessionNotice(null);
-  }, [workspaceIdentity, workspacePath]);
-
-  const smartRouteSession = useCallback(() => {
-    if (state.status !== "ready") return;
-    setSaveError(null);
-    const draft = readV4ComposerDraft(
-      workspacePath,
-      workspaceIdentity,
-      activeTaskId ?? V4_DRAFT_SCOPE_ROOT,
-    );
-    const text = draft?.text.trim() ?? "";
-    if (!text) {
-      setSessionNotice(intl.formatMessage({ id: "harnessRouter.smartRouteEmpty" }));
-      return;
-    }
-    const suggestion = suggestRoute(candidatesFromSelectionView(state.view), {
-      textSample: text.slice(0, 4000),
-      approxInputChars: text.length,
-    });
-    if (!suggestion) {
-      setSessionNotice(intl.formatMessage({ id: "harnessRouter.smartRouteNone" }));
-      return;
-    }
-    routeSession({ providerId: suggestion.providerId, modelId: suggestion.modelId });
-    if (suggestion.alternatives.length > 0) {
-      const route = `${suggestion.providerId}/${suggestion.modelId}`;
-      setSessionNotice(
-        intl.formatMessage(
-          { id: "harnessRouter.smartRouteWithFallbacks" },
-          {
-            route,
-            fallbacks: suggestion.alternatives
-              .map((alt) => `${alt.providerId}/${alt.modelId}`)
-              .join(", "),
-          },
-        ),
-      );
-    }
-    logger.info("[harness-router] smart route suggested", {
-      route: `${suggestion.providerId}/${suggestion.modelId}`,
-      confidence: suggestion.confidence,
-      reasons: suggestion.reasons,
-      alternatives: suggestion.alternatives.map((alt) => `${alt.providerId}/${alt.modelId}`),
-      workspacePath,
-    });
-  }, [activeTaskId, intl, routeSession, state, workspaceIdentity, workspacePath]);
 
   const toggleHarnessConsent = useCallback(
     async (target: HarnessRouteTarget, harnessName: string, granted: boolean) => {
@@ -316,44 +247,6 @@ export function HarnessRouterSidePane({
         {sessionNotice && (
           <p className="pt-1 text-ui-xs text-foreground">{sessionNotice}</p>
         )}
-        <div className="flex items-center gap-2 pt-2">
-          <button
-            type="button"
-            onClick={toggleAutoRoute}
-            aria-pressed={autoRouteEnabled}
-            title={intl.formatMessage({ id: "harnessRouter.autoRouteHint" })}
-            className={cn(
-              "flex flex-1 items-center gap-1.5 rounded-md border px-2 py-1.5 text-left text-ui-xs",
-              "border-border hover:bg-accent",
-              autoRouteEnabled && "border-primary",
-            )}
-          >
-            <SparklesIcon
-              className={cn(
-                "size-3.5 shrink-0",
-                autoRouteEnabled ? "text-primary" : "text-foreground-subtle",
-              )}
-            />
-            <span className="min-w-0 flex-1 truncate font-medium text-foreground">
-              {intl.formatMessage({ id: "harnessRouter.autoRoute" })}
-            </span>
-            {autoRouteEnabled && <CheckIcon className="size-3.5 shrink-0 text-primary" />}
-          </button>
-          <button
-            type="button"
-            onClick={smartRouteSession}
-            title={intl.formatMessage({ id: "harnessRouter.smartRouteHint" })}
-            className={cn(
-              "flex flex-1 items-center gap-1.5 rounded-md border px-2 py-1.5 text-left text-ui-xs",
-              "border-border hover:bg-accent",
-            )}
-          >
-            <RouteIcon className="size-3.5 shrink-0 text-foreground-subtle" />
-            <span className="min-w-0 flex-1 truncate font-medium text-foreground">
-              {intl.formatMessage({ id: "harnessRouter.smartRoute" })}
-            </span>
-          </button>
-        </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
